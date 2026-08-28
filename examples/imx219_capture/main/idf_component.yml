@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.3"
+  # The video capture framework (pulls in esp_cam_sensor, esp_ipa, etc.).
+  espressif/esp_video: "*"
+  # The IMX219 add-on driver lives in this repo's components/ directory and is
+  # picked up via EXTRA_COMPONENT_DIRS in the top-level project CMakeLists.

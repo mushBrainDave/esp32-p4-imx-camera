@@ -1,0 +1,13 @@
+version: "0.1.0"
+description: >-
+  Sony IMX-series MIPI-CSI camera sensor drivers (IMX219, and planned IMX477 /
+  IMX708) for the ESP32-P4 esp_cam_sensor framework. Brings the Raspberry Pi
+  camera modules to ESP32-P4.
+url: https://github.com/mushbraindave/esp_cam_sensor_imx
+targets:
+  - esp32p4
+dependencies:
+  idf: ">=5.3"
+  # The core sensor framework this add-on plugs into. Pulled from the ESP
+  # component registry; pin as needed for your ESP-IDF version.
+  espressif/esp_cam_sensor: "*"

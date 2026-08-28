@@ -1,0 +1,39 @@
+menu "Camera Sensor (IMX add-on)"
+
+    config CAMERA_IMX219
+        bool "Support IMX219 (Raspberry Pi Camera Module v2)"
+        default y
+        help
+            Enable the Sony IMX219 MIPI-CSI driver.
+
+    if CAMERA_IMX219
+
+        config CAMERA_IMX219_AUTO_DETECT_MIPI_INTERFACE_SENSOR
+            bool "Auto-detect IMX219 on the MIPI-CSI interface"
+            default y
+            help
+                Register the IMX219 in the esp_cam_sensor auto-detect list so
+                esp_video probes for it automatically at start-up.
+
+    endif # CAMERA_IMX219
+
+    config CAMERA_IMX708
+        bool "Support IMX708 (Raspberry Pi Camera Module 3 / NoIR 3)"
+        default y
+        help
+            Enable the Sony IMX708 MIPI-CSI driver. Bring-up scope is a 2x2
+            binned 2304x1296 RAW10 stream; autofocus (VCM at I2C 0x0c) and
+            PDAF are not yet driven.
+
+    if CAMERA_IMX708
+
+        config CAMERA_IMX708_AUTO_DETECT_MIPI_INTERFACE_SENSOR
+            bool "Auto-detect IMX708 on the MIPI-CSI interface"
+            default y
+            help
+                Register the IMX708 in the esp_cam_sensor auto-detect list so
+                esp_video probes for it automatically at start-up.
+
+    endif # CAMERA_IMX708
+
+endmenu
