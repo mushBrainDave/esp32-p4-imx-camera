@@ -1,32 +1,55 @@
-# Prerequisites
-*.d
+# ==========================================================================
+# ESP-IDF build output
+# ==========================================================================
+# Each example builds into its own build/ directory.
+build/
 
-# Compiled Object files
-*.slo
-*.lo
+# Generated per-target config. sdkconfig.defaults IS committed (it seeds these);
+# sdkconfig itself is machine/target-generated and should not be.
+sdkconfig
+sdkconfig.old
+
+# IDF Component Manager: downloaded dependencies and the resolved lock file.
+# Regenerated from each example's idf_component.yml.
+managed_components/
+dependencies.lock
+
+# ==========================================================================
+# Local reference material — NOT part of the deliverable
+# ==========================================================================
+# Third-party driver sources fetched purely for reference while porting
+# (e.g. the GPL-2.0 Linux kernel imx219.c / imx708.c and Espressif headers).
+# Kept locally to work from; deliberately not redistributed with this
+# Apache-2.0 repository. Remove this line if you intend to vendor them.
+/references/
+
+# Camera frames dumped by the snapshot example, if run from the repo tree.
+*.bmp
+*.raw
+
+# ==========================================================================
+# Editor / IDE
+# ==========================================================================
+# ESP-IDF's VS Code integration writes machine-specific absolute paths
+# (toolchain, OpenOCD, IDF_PATH) into .vscode — usually not worth committing.
+.vscode/
+.idea/
+*.swp
+*~
+
+# ==========================================================================
+# OS cruft
+# ==========================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ==========================================================================
+# Stray compiled artifacts (safety net; real builds stay under build/)
+# ==========================================================================
 *.o
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
 *.a
 *.lib
-
-# Executables
 *.exe
 *.out
-*.app
