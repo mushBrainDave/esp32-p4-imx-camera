@@ -53,3 +53,12 @@ Desktop.ini
 *.lib
 *.exe
 *.out
+
+# ==========================================================================
+# Captured frames
+# ==========================================================================
+# tools/capture.py writes received images and logs into its --out directory.
+# These are debug artefacts, not deliverables.
+capture/
+shot/
+sweep/

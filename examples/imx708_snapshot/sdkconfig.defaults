@@ -48,3 +48,18 @@ CONFIG_ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR=y
 CONFIG_FATFS_LFN_HEAP=y
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Console baud. Captured frames now travel down this same link, so the default
+# 115200 is the bottleneck: it would take ~6 minutes to shift one raw 4.1 MB
+# frame. At 2 Mbaud that is ~21 s, and a JPEG is a couple of seconds. The CH343
+# bridge on this board handles multi-megabaud comfortably. Flashing is
+# unaffected - esptool negotiates its own rate - so a bad value here costs a
+# garbled log, not a bricked board.
+# The baud is only settable under ESP_CONSOLE_UART_CUSTOM - under the default
+# choice the symbol has no prompt, and kconfgen silently keeps 115200 no matter
+# what this file says. "Custom" here changes nothing else: the TX/RX pins it
+# exposes default to GPIO 37/38 on the P4, which is exactly what the default
+# console already uses, and neither collides with the camera I2C (7/8) or the
+# SD card (39-44).
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000

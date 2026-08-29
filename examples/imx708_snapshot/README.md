@@ -150,6 +150,77 @@ defocus from motion blur, so hold the camera still.
   is still moving.
 
 
+## Getting frames off the board
+
+Captured frames travel down the same USB cable as the log, so a capture no
+longer means powering off and carrying the microSD to a PC. The console runs at
+**2 Mbaud** for this (`CONFIG_ESP_CONSOLE_UART_BAUDRATE`); a whole run is about
+8 seconds.
+
+Two formats, chosen deliberately:
+
+| | format | size | why |
+| --- | --- | --- | --- |
+| normal capture | JPEG q90 | ~250-300 KB, ~1.5 s | small, and anything can open it |
+| `FOCUS_SWEEP` | raw RGB565 | 4.1 MB, ~21 s | lossless, because the sweep is *measurement* |
+
+**Do not measure sharpness on a JPEG.** Measured here with `JPEG_VALIDATE`: the
+same frame scores 1411 as JPEG q90 against 1712 raw — 17.6% low. The focus sweep
+peak is only ~1.25x its floor, so that shift is comparable to the entire signal,
+and it is content-dependent (a sharper frame has more high-frequency energy, is
+quantised harder, and is dragged further down). JPEG is for looking at.
+
+`IMAGE_OUT_SD` (default off) restores the old BMP-to-card path. With it off the
+example never touches the SD card, so no card need be inserted.
+
+### Receiving
+
+```bash
+python tools/capture.py --flash
+```
+
+That flashes and then captures in **one process**, which matters: the port has a
+single owner. A serial monitor left running in another terminal makes
+`idf.py flash` fail with `Access is denied`, and a monitor cannot recover the
+image anyway - it mangles binary as it prints it. Close any monitor before
+running this. `--flash` is optional; without it the script just listens.
+
+JPEG frames land as `.jpg`. Raw frames are converted to `.bmp` so they open
+directly. Use `--seconds` to cover a longer run (a `FOCUS_SWEEP` needs roughly
+25 s per position) and `--baud` if the console rate has been changed.
+
+Frames are framed in the stream as:
+
+```
+IMGSTART name=<n> fmt=<jpeg|rgb565> w=<w> h=<h> len=<N> crc32=<hex>
+<exactly N raw bytes>
+IMGEND
+```
+
+A length and a CRC, so the receiver knows it got the frame rather than inferring
+it from delimiters that could occur inside the data. Verify the CRC — it is what
+caught the bug below.
+
+### Two things that will bite you here
+
+**The task watchdog writes into your binary.** A 4 MB frame takes ~21 s, and if
+the sending loop never yields, the idle task starves and the TWDT prints a
+warning *and a backtrace* straight into the middle of the payload — four
+917-byte injections in a 21 s transfer, silently corrupting it. It bypasses
+`esp_log_level_set` because it writes directly rather than through the tag
+system. The send loop yields every 32 chunks to prevent this.
+
+**The console rewrites `
+` as `
+`.** Binary payloads must set
+`uart_vfs_dev_port_set_tx_line_endings(..., ESP_LINE_ENDINGS_LF)` first, or every
+0x0A byte in the image gains a 0x0D.
+
+Also note the baud is only settable under `ESP_CONSOLE_UART_CUSTOM`. Under the
+default choice the symbol has no prompt and kconfgen silently keeps 115200 no
+matter what `sdkconfig.defaults` says.
+
+
 ## Bring-up switches (all OFF by default)
 
 `main/imx708_snapshot_main.c` has two switches at the top, kept for
