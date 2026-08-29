@@ -19,6 +19,16 @@ if(CONFIG_CAMERA_IMX708)
     list(APPEND priv_include_dirs "sensors/imx708/private_include")
 endif()
 
+# ISP tuning (IPA) configs live in sensors/<name>/cfg/<name>_default.json, but
+# they CANNOT be registered from here: esp_ipa reads ESP_IPA_JSON_CONFIG_FILE_PATH
+# while its own CMakeLists is processed, which has already happened by the time a
+# component's CMakeLists runs. The app must register them in its project
+# CMakeLists, after include(project.cmake) and before project() - see
+# examples/imx708_snapshot/CMakeLists.txt. Without that registration
+# esp_ipa_pipeline_get_config("IMX708") returns NULL, esp_video logs
+# "failed to get configuration to initialize ISP controller", and you get no
+# auto-exposure and no white balance.
+
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS ${include_dirs}

@@ -30,12 +30,18 @@
 /* Binned-mode timing (from the Sony reference mode table). */
 #define IMX708_PIXEL_RATE         585600000
 #define IMX708_HTS                7824    /* line_length_pix 0x1e90 */
-#define IMX708_VTS                1336    /* frame_length 0x0538    */
+#define IMX708_VTS                2672    /* frame_length 0x0a70    */
 #define IMX708_TLINE_NS           13361   /* HTS / pixel_rate, ns   */
 /* 450 MHz link freq -> 900 Mbps per lane, 2 lanes */
 #define IMX708_MIPI_CSI_LINE_RATE 900000000
 
-#define IMX708_LINESYNC_ENABLE    0
+/*
+ * Feeds has_line_start_packet / has_line_end_packet on the P4 ISP. With it off
+ * the ISP has no per-line delimiter and free-runs on h_res, so any slip at the
+ * start of a line stays for the whole line - a fixed, rate-invariant band of
+ * wrong pixels at each edge. Espressif's own MIPI sensors all enable it.
+ */
+#define IMX708_LINESYNC_ENABLE    1
 
 static const char *TAG = "imx708";
 
@@ -49,7 +55,7 @@ static const esp_cam_sensor_isp_info_t imx708_isp_info[] = {
             .pclk = IMX708_PIXEL_RATE,
             .hts = IMX708_HTS,
             .vts = IMX708_VTS,
-            .exp_def = 1288,
+            .exp_def = 2000,
             .gain_def = IMX708_ANA_GAIN_DEFAULT,
             .tline_ns = IMX708_TLINE_NS,
             .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
@@ -59,15 +65,17 @@ static const esp_cam_sensor_isp_info_t imx708_isp_info[] = {
 
 static const esp_cam_sensor_format_t imx708_format_info[] = {
     {
-        .name = "MIPI_2lane_24Minput_RAW10_2304x1296_binned_56fps",
+        /* 1920 wide keeps the line inside what the P4 CSI/ISP path can carry;
+           see imx708_mode_1920x1080_regs for the evidence behind that. */
+        .name = "MIPI_2lane_24Minput_RAW10_1920x1080_binned_28fps",
         .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
         .port = ESP_CAM_SENSOR_MIPI_CSI,
         .xclk = IMX708_INCLK_FREQ_HZ,
-        .width = 2304,
-        .height = 1296,
-        .regs = imx708_mode_2304x1296_regs,
-        .regs_size = ARRAY_SIZE(imx708_mode_2304x1296_regs),
-        .fps = 56,
+        .width = 1920,
+        .height = 1080,
+        .regs = imx708_mode_1920x1080_regs,
+        .regs_size = ARRAY_SIZE(imx708_mode_1920x1080_regs),
+        .fps = 28,
         .isp_info = &imx708_isp_info[0],
         .mipi_info = {
             .mipi_clk = IMX708_MIPI_CSI_LINE_RATE,
@@ -79,6 +87,43 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
 };
 
 #define IMX708_DEFAULT_FORMAT_INDEX 0
+
+/* ------------------------------------------------------------------ */
+/* Gain table                                                          */
+/* ------------------------------------------------------------------ */
+/*
+ * esp_video drives AE gain as a *menu* control: it calls VIDIOC_QUERYMENU to
+ * read each entry's total gain and binary-searches for the one nearest the
+ * target, then sets the winning INDEX. So ESP_CAM_SENSOR_GAIN has to be an
+ * enumeration of gain values in milli-units (1000 = 1.00x) - declaring it as a
+ * plain number makes the query fail and the AE silently drives exposure only.
+ *
+ * IMX708 analog gain is gain = 1024 / (1024 - code) for code 112..960, i.e.
+ * 1.123x to 16x. These 47 entries step it at roughly 1/12 stop.
+ */
+static const uint32_t imx708_total_gain_val_map[] = {
+     1123,  1189,  1261,  1335,  1414,  1499,  1588,  1681,
+     1781,  1889,  2000,  2120,  2246,  2381,  2522,  2674,
+     2829,  2994,  3180,  3368,  3568,  3779,  4000,  4231,
+     4491,  4763,  5044,  5333,  5657,  5988,  6360,  6737,
+     7111,  7529,  8000,  8463,  8982,  9481, 10039, 10667,
+    11378, 12047, 12642, 13474, 14222, 15059, 16000,
+};
+
+static const uint16_t imx708_ana_gain_code_map[] = {
+     112,  163,  212,  257,  300,  341,  379,  415,
+     449,  482,  512,  541,  568,  594,  618,  641,
+     662,  682,  702,  720,  737,  753,  768,  782,
+     796,  809,  821,  832,  843,  853,  863,  872,
+     880,  888,  896,  903,  910,  916,  922,  928,
+     934,  939,  943,  948,  952,  956,  960,
+};
+
+/* Per-device state, so the ISP can read back what it last set. */
+typedef struct {
+    uint32_t exposure_val;      /*!< current exposure, in lines */
+    uint32_t gain_index;        /*!< index into imx708_total_gain_val_map */
+} imx708_para_t;
 
 /* ------------------------------------------------------------------ */
 /* SCCB helpers (16-bit reg addr, 8-bit value)                         */
@@ -187,7 +232,11 @@ static esp_err_t imx708_set_exposure(esp_cam_sensor_device_t *dev, uint32_t line
     if (lines > max) {
         lines = max;
     }
-    return imx708_write16(dev->sccb_handle, IMX708_REG_EXPOSURE_H, (uint16_t)lines);
+    esp_err_t ret = imx708_write16(dev->sccb_handle, IMX708_REG_EXPOSURE_H, (uint16_t)lines);
+    if (ret == ESP_OK && dev->priv) {
+        ((imx708_para_t *)dev->priv)->exposure_val = lines;
+    }
+    return ret;
 }
 
 /* Analog gain: 16-bit reg 0x0204, code 112..960, gain = 1024/(1024-code). */
@@ -200,6 +249,20 @@ static esp_err_t imx708_set_analog_gain(esp_cam_sensor_device_t *dev, uint32_t c
         code = IMX708_ANA_GAIN_MAX;
     }
     return imx708_write16(dev->sccb_handle, IMX708_REG_ANALOG_GAIN_H, (uint16_t)code);
+}
+
+/* Total gain by menu index - what the ISP's AE actually calls. */
+static esp_err_t imx708_set_gain_index(esp_cam_sensor_device_t *dev, uint32_t index)
+{
+    if (index >= ARRAY_SIZE(imx708_ana_gain_code_map)) {
+        index = ARRAY_SIZE(imx708_ana_gain_code_map) - 1;
+    }
+    esp_err_t ret = imx708_write16(dev->sccb_handle, IMX708_REG_ANALOG_GAIN_H,
+                                   imx708_ana_gain_code_map[index]);
+    if (ret == ESP_OK && dev->priv) {
+        ((imx708_para_t *)dev->priv)->gain_index = index;
+    }
+    return ret;
 }
 
 /* Digital gain: 16-bit reg 0x020e, 0x0100 = 1.0x. */
@@ -239,6 +302,14 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
         qdesc->number.step = 1;
         qdesc->default_value = 1288;
         break;
+    case ESP_CAM_SENSOR_GAIN:
+        /* Menu control: elements are total gain in milli-units, and the value
+           set later is an INDEX into this table, not a register code. */
+        qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_ENUMERATION;
+        qdesc->enumeration.count = ARRAY_SIZE(imx708_total_gain_val_map);
+        qdesc->enumeration.elements = imx708_total_gain_val_map;
+        qdesc->default_value = 0;
+        break;
     case ESP_CAM_SENSOR_ANGAIN:
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
         qdesc->number.minimum = IMX708_ANA_GAIN_MIN;
@@ -263,7 +334,23 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
 
 static esp_err_t imx708_get_para_value(esp_cam_sensor_device_t *dev, uint32_t id, void *arg, size_t size)
 {
-    return ESP_ERR_NOT_SUPPORTED;
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+
+    if (para == NULL || arg == NULL || size < sizeof(uint32_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    switch (id) {
+    case ESP_CAM_SENSOR_EXPOSURE_VAL:
+        *(uint32_t *)arg = para->exposure_val;
+        break;
+    case ESP_CAM_SENSOR_GAIN:
+        *(uint32_t *)arg = para->gain_index;
+        break;
+    default:
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t imx708_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id, const void *arg, size_t size)
@@ -285,9 +372,31 @@ static esp_err_t imx708_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id
         ret = imx708_set_exposure(dev, lines);
         break;
     }
+    case ESP_CAM_SENSOR_GAIN:
+        ret = imx708_set_gain_index(dev, *(const uint32_t *)arg);
+        break;
     case ESP_CAM_SENSOR_ANGAIN:
         ret = imx708_set_analog_gain(dev, *(const uint32_t *)arg);
         break;
+    case ESP_CAM_SENSOR_GROUP_EXP_GAIN: {
+        /* The ISP prefers this: exposure and gain applied together, so a frame
+           never lands with one updated and the other not. */
+        const esp_cam_sensor_gh_exp_gain_t *g = (const esp_cam_sensor_gh_exp_gain_t *)arg;
+        uint32_t lines;
+        if (g->exposure_val != 0) {
+            lines = g->exposure_val;
+        } else if (g->exposure_us != 0) {
+            lines = (uint32_t)(((uint64_t)g->exposure_us * 1000) / IMX708_TLINE_NS);
+        } else {
+            ret = ESP_ERR_INVALID_ARG;
+            break;
+        }
+        ret = imx708_set_exposure(dev, lines);
+        if (ret == ESP_OK) {
+            ret = imx708_set_gain_index(dev, g->gain_index);
+        }
+        break;
+    }
     case ESP_CAM_SENSOR_DGAIN:
         ret = imx708_set_digital_gain(dev, *(const uint32_t *)arg);
         break;
@@ -325,15 +434,26 @@ static esp_err_t imx708_set_format(esp_cam_sensor_device_t *dev, const esp_cam_s
         format = &imx708_format_info[IMX708_DEFAULT_FORMAT_INDEX];
     }
 
-    /* common -> link freq -> mode */
+    /* common -> mode -> link freq, the order the sensor is brought up in. The
+       mode table carries the rest of the PLL block, so the link multiplier has
+       to land after it or the mode's own PLL values fight it. */
     ret = imx708_write_array(dev->sccb_handle, imx708_common_regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write common regs failed");
-    ret = imx708_write_array(dev->sccb_handle, imx708_link_450mhz_regs);
-    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write link regs failed");
     ret = imx708_write_array(dev->sccb_handle, (const imx708_reginfo_t *)format->regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write mode regs failed");
+    ret = imx708_write_array(dev->sccb_handle, imx708_link_450mhz_regs);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write link regs failed");
+
+    /* Binned modes don't re-mosaic, so the quad-Bayer LPF stays off. */
+    ret = imx708_write(dev->sccb_handle, IMX708_REG_LPF_INTENSITY_EN, IMX708_LPF_INTENSITY_DISABLED);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "disable quad-bayer LPF failed");
 
     dev->cur_format = format;
+    if (dev->priv) {
+        imx708_para_t *para = (imx708_para_t *)dev->priv;
+        para->exposure_val = format->isp_info->isp_v1_info.exp_def;
+        para->gain_index = 0;                    /* mode table writes min gain */
+    }
     ESP_LOGI(TAG, "set format: %s", format->name);
     return ret;
 }
@@ -454,11 +574,12 @@ esp_cam_sensor_device_t *imx708_detect(esp_cam_sensor_config_t *config)
         return NULL;
     }
 
-    esp_cam_sensor_device_t *dev = calloc(1, sizeof(esp_cam_sensor_device_t));
+    esp_cam_sensor_device_t *dev = calloc(1, sizeof(esp_cam_sensor_device_t) + sizeof(imx708_para_t));
     if (dev == NULL) {
         ESP_LOGE(TAG, "no memory for camera device");
         return NULL;
     }
+    dev->priv = (uint8_t *)dev + sizeof(esp_cam_sensor_device_t);
 
     dev->name = (char *)IMX708_SENSOR_NAME;
     dev->sccb_handle = config->sccb_handle;

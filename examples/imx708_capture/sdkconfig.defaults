@@ -4,6 +4,10 @@ CONFIG_IDF_TARGET="esp32p4"
 # PSRAM — frame buffers live in SPIRAM (a 2304x1296 RAW10 frame is ~3.7 MB)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_HEX=y
+# 200 MHz PSRAM is gated behind the experimental-features flag; without it
+# the choice silently falls back to 20 MHz, which is far too slow to absorb
+# a full-rate camera frame and every capture comes back empty.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_SPIRAM_SPEED_200M=y
 
 # 32 MB flash on this board (default image header assumes less)

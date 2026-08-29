@@ -6,7 +6,7 @@
  * IMX708 register initialisation sequences (standard Sony bring-up values).
  * The sensor's own tables are already byte-granular {addr, val8} pairs, so they
  * translate 1:1 — no 16-bit splitting needed. Applied in order:
- *   mode_common -> link_450Mhz -> mode (e.g. 2x2 binned).
+ *   mode_common -> mode -> link_450Mhz, matching the sensor's bring-up order.
  */
 #pragma once
 
@@ -46,14 +46,33 @@ static const imx708_reginfo_t imx708_link_450mhz_regs[] = {
 };
 
 /*
- * Mode: 2304x1296, 2x2 binned, RAW10 — the recommended bring-up mode (full FOV,
- * half resolution). line_length 0x1e90 (7824), frame_length 0x0538 (1336) as
- * shipped by Sony (≈56 fps at 585.6 MHz pixel rate); AE/vblank can lengthen it
- * later. Kept verbatim from the sensor's reference table.
+ * Mode: 1920x1080, a centred digital crop of the same 2x2-binned RAW10 readout.
+ *
+ * Same sensor timing as the 2304x1296 mode - only the digital crop window and
+ * output size differ, so the analog readout, PLL, binning and Bayer phase are
+ * untouched (both crop offsets are even, so the RGGB phase is preserved).
+ *
+ * Why 1920 and not the sensor's native 2304: at 2304 the captured line breaks
+ * up. Scene data runs out around x=1918 and the columns at each edge duplicate
+ * each other exactly 2048 pixels apart - a horizontal capacity limit in the P4
+ * CSI/ISP path, not a sensor fault. It survived every change to frame rate,
+ * cache size and line sync, and disappeared the moment the line got shorter.
+ * 1920 is the width Espressif ship all their own P4 camera examples at. Costs
+ * 17% of horizontal FOV; the analog readout still covers the full sensor.
+ *
+ * line_length is Sony's 0x1e90 (7824). frame_length is deliberately doubled to
+ * 0x0a70 (2672), giving 28 fps instead of 56.
+ *
+ * That is an exposure decision, not a bandwidth one. Maximum exposure is
+ * frame_length - 48 lines, so Sony's 1336 caps integration at 1288 lines
+ * (17.2 ms) and forces the AE to buy the rest with analog gain - which is
+ * noise. 2672 lines allows 2624 (35 ms), a full stop more light for free. For
+ * a stills app frame rate is worth nothing and photons are worth everything.
+ * At 1920x1080x28fps this is 116 MB/s into PSRAM, comfortably within budget.
  */
-static const imx708_reginfo_t imx708_mode_2304x1296_regs[] = {
+static const imx708_reginfo_t imx708_mode_1920x1080_regs[] = {
     {0x0342, 0x1E}, {0x0343, 0x90},                 /* line length = 7824 */
-    {0x0340, 0x05}, {0x0341, 0x38},                 /* frame length = 1336 */
+    {0x0340, 0x0A}, {0x0341, 0x70},                 /* frame length = 2672 -> 28 fps */
     {0x0344, 0x00}, {0x0345, 0x00},
     {0x0346, 0x00}, {0x0347, 0x00},
     {0x0348, 0x11}, {0x0349, 0xFF},
@@ -63,23 +82,25 @@ static const imx708_reginfo_t imx708_mode_2304x1296_regs[] = {
     {0x3200, 0x41}, {0x3201, 0x41},
     {0x32D5, 0x00}, {0x32D6, 0x00}, {0x32DB, 0x01}, {0x32DF, 0x00},
     {0x350C, 0x00}, {0x350D, 0x00},
-    {0x0408, 0x00}, {0x0409, 0x00}, {0x040A, 0x00}, {0x040B, 0x00},
-    {0x040C, 0x09}, {0x040D, 0x00}, {0x040E, 0x05}, {0x040F, 0x10},
-    {0x034C, 0x09}, {0x034D, 0x00},                 /* x output = 2304 */
-    {0x034E, 0x05}, {0x034F, 0x10},                 /* y output = 1296 */
+    {0x0408, 0x00}, {0x0409, 0xC0},                 /* crop x offset = 192  */
+    {0x040A, 0x00}, {0x040B, 0x6C},                 /* crop y offset = 108  */
+    {0x040C, 0x07}, {0x040D, 0x80},                 /* crop width  = 1920   */
+    {0x040E, 0x04}, {0x040F, 0x38},                 /* crop height = 1080   */
+    {0x034C, 0x07}, {0x034D, 0x80},                 /* x output = 1920 */
+    {0x034E, 0x04}, {0x034F, 0x38},                 /* y output = 1080 */
     {0x0301, 0x05}, {0x0303, 0x02}, {0x0305, 0x02}, {0x0306, 0x00},
     {0x0307, 0x7A}, {0x030B, 0x02}, {0x030D, 0x04}, {0x0310, 0x01},
     {0x3CA0, 0x00}, {0x3CA1, 0x3C}, {0x3CA4, 0x00}, {0x3CA5, 0x3C},
     {0x3CA6, 0x00}, {0x3CA7, 0x00}, {0x3CAA, 0x00}, {0x3CAB, 0x00},
     {0x3CB8, 0x00}, {0x3CB9, 0x1C}, {0x3CBA, 0x00}, {0x3CBB, 0x08},
     {0x3CBC, 0x00}, {0x3CBD, 0x1E}, {0x3CBE, 0x00}, {0x3CBF, 0x0A},
-    {0x0202, 0x05}, {0x0203, 0x08},                 /* exposure = 1288 (=max here) */
+    {0x0202, 0x07}, {0x0203, 0xD0},                 /* exposure = 2000 lines (26.7 ms) */
     {0x0224, 0x01}, {0x0225, 0xF4},
     {0x3116, 0x01}, {0x3117, 0xF4},
-    {0x0204, 0x00}, {0x0205, 0x70},                 /* analog gain = 112 (min) */
+    {0x0204, 0x00}, {0x0205, 0x70},
     {0x0216, 0x00}, {0x0217, 0x70},
     {0x0218, 0x01}, {0x0219, 0x00},
-    {0x020E, 0x01}, {0x020F, 0x00},                 /* digital gain = 1.0x */
+    {0x020E, 0x01}, {0x020F, 0x00},
     {0x3118, 0x00}, {0x3119, 0x70}, {0x311A, 0x01}, {0x311B, 0x00},
     {0x341a, 0x00}, {0x341b, 0x00}, {0x341c, 0x00}, {0x341d, 0x00},
     {0x341e, 0x00}, {0x341f, 0x90}, {0x3420, 0x00}, {0x3421, 0x6c},
