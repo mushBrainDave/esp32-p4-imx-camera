@@ -7,9 +7,18 @@ and a monitor cannot extract a binary payload anyway, since it mangles the bytes
 it prints. This script is the single owner: it flashes (optionally), resets the
 board, captures the stream, and pulls the images out of it.
 
-    python tools/capture.py --flash                  # flash, then capture
-    python tools/capture.py                          # just capture
-    python tools/capture.py --seconds 400 --out sweep # a FOCUS_SWEEP run
+Run it from anywhere; it works out which project to flash:
+
+    # from the repo root - defaults to examples/imx708_snapshot
+    python tools/capture.py --flash
+
+    # from inside any example directory
+    python ../../tools/capture.py --flash
+
+    # or point at a project explicitly, from anywhere
+    python tools/capture.py --flash --project examples/imx708_snapshot
+
+    python tools/capture.py --seconds 400 --out sweep   # a FOCUS_SWEEP run
 
 Frames are framed in the stream as:
 
@@ -39,6 +48,38 @@ except ImportError:
              "  ~/.espressif/python_env/idf5.4_py3.11_env/Scripts/python.exe tools/capture.py")
 
 HDR = re.compile(rb'IMGSTART name=(\S+) fmt=(\S+) w=(\d+) h=(\d+) len=(\d+) crc32=([0-9a-f]+)\n')
+
+
+def is_project(d):
+    """An ESP-IDF project is a directory whose CMakeLists.txt calls project()."""
+    cml = os.path.join(d, 'CMakeLists.txt')
+    if not os.path.isfile(cml):
+        return False
+    try:
+        with open(cml, encoding='utf-8', errors='replace') as f:
+            return re.search(r'^\s*project\s*\(', f.read(), re.M) is not None
+    except OSError:
+        return False
+
+
+def resolve_project(explicit):
+    """Which project to flash: what was asked for, else the CWD, else the default.
+
+    The script lives in <repo>/tools, so the repo root is one level up - that is
+    how it finds the default example no matter where it was invoked from.
+    """
+    if explicit:
+        d = os.path.abspath(explicit)
+        if not is_project(d):
+            sys.exit(f'{d} does not look like an ESP-IDF project '
+                     '(no CMakeLists.txt with a project() call).')
+        return d
+    cwd = os.getcwd()
+    if is_project(cwd):
+        return cwd
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default = os.path.join(repo, 'examples', 'imx708_snapshot')
+    return default if is_project(default) else None
 
 
 def rgb565_to_bmp(payload, w, h, path):
@@ -83,12 +124,20 @@ def main():
                     help='how long to listen; a sweep needs ~25 s per position')
     ap.add_argument('--out', default='capture')
     ap.add_argument('--flash', action='store_true', help='run idf.py flash first')
+    ap.add_argument('--project', default=None,
+                    help='ESP-IDF project to flash. Defaults to the current directory '
+                         'when it is a project, else examples/imx708_snapshot.')
     ap.add_argument('--keep-raw', action='store_true',
                     help='also keep the undecoded .raw payload alongside the .bmp')
     args = ap.parse_args()
 
+    project = resolve_project(args.project)
+
     if args.flash:
-        print(f'--- flashing on {args.port} ---')
+        if not project:
+            sys.exit('No ESP-IDF project found. Run this from a project directory '
+                     'or pass --project <dir>.')
+        print(f'--- flashing {project} on {args.port} ---')
         # idf.py is a Python script, not an executable; on Windows it can only be
         # run directly if the export step left a .exe/.bat shim on PATH. Fall
         # back to invoking it through the interpreter.
@@ -100,7 +149,7 @@ def main():
             if not idf_path:
                 sys.exit('IDF_PATH is not set - run this from an activated ESP-IDF shell.')
             cmd = [sys.executable, os.path.join(idf_path, 'tools', 'idf.py')]
-        r = subprocess.run(cmd + ['-p', args.port, 'flash'])
+        r = subprocess.run(cmd + ['-p', args.port, 'flash'], cwd=project)
         if r.returncode != 0:
             sys.exit('flash failed. Is a serial monitor still holding the port?')
 

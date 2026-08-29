@@ -175,11 +175,23 @@ example never touches the SD card, so no card need be inserted.
 
 ### Receiving
 
+From this example's directory:
+
+```bash
+python ../../tools/capture.py --flash
+```
+
+or from the repo root, where it defaults to this example:
+
 ```bash
 python tools/capture.py --flash
 ```
 
-That flashes and then captures in **one process**, which matters: the port has a
+`tools/` sits at the repo root while `idf.py flash` has to run inside a project,
+so the script resolves the two independently: it flashes the current directory
+when that is a project, otherwise this example, or whatever `--project` names.
+
+It flashes and then captures in **one process**, which matters: the port has a
 single owner. A serial monitor left running in another terminal makes
 `idf.py flash` fail with `Access is denied`, and a monitor cannot recover the
 image anyway - it mangles binary as it prints it. Close any monitor before
