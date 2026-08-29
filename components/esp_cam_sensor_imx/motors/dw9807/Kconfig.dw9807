@@ -1,0 +1,85 @@
+menuconfig CAM_MOTOR_DW9807
+    bool "DW9807 VCM (Raspberry Pi Camera Module 3 autofocus)"
+    default n
+    select CAMERA_MOTOR_DEVICE_USED
+    help
+        Enable the Dongwoon DW9807 voice-coil-motor driver - the autofocus
+        actuator fitted to the Raspberry Pi Camera Module 3 / NoIR 3, at I2C
+        0x0c on the same bus as the IMX708.
+
+        Without this the lens never moves: it sits wherever its spring rests it,
+        which is past infinity, and every picture is soft no matter how well the
+        exposure and colour are tuned.
+
+        Closed-loop autofocus additionally needs ESP_IPA_AF_ALGORITHM,
+        ESP_VIDEO_ENABLE_CAMERA_MOTOR_CONTROLLER and
+        ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR, plus an "af" block in the
+        sensor's IPA tuning JSON. With the motor alone you get a lens you can
+        position by hand through V4L2_CID_FOCUS_ABSOLUTE, but nothing that
+        decides where to put it.
+
+if CAM_MOTOR_DW9807
+
+    config CAM_MOTOR_DW9807_AUTO_DETECT
+        bool "Auto-detect the DW9807"
+        default y
+        help
+            Register the DW9807 in the esp_cam_sensor motor auto-detect list so
+            esp_video probes for it during esp_video_init(). The application
+            still has to pass a cam_motor entry and ESP_VIDEO_INIT_FLAGS_MOTOR
+            in its esp_video_init_config_t - auto-detect only decides which
+            drivers are candidates, not whether probing happens at all.
+
+    config CAM_MOTOR_DW9807_INIT_POS
+        int "Lens park position at start-up (DAC code)"
+        range 0 1023
+        default 512
+        help
+            Where the lens is placed as soon as the motor is detected, before
+            the autofocus loop has converged - so it governs how the first few
+            frames look, and it is the whole answer for a build with no AF
+            algorithm.
+
+            The DAC is 10-bit, but only part of that travel is useful. Measured
+            on this module with the focus sweep in examples/imx708_snapshot:
+            codes below ~384 are a dead plateau with the lens against its stop,
+            the rise starts at 448, and a ~2 m subject peaked at 576.
+
+            The default of 512 sits just above the dead zone, so it is sharp for
+            distant subjects without wasting the park on travel that does
+            nothing. It was 450 - that turned out to be at the very bottom of
+            the rise and measurably soft (1467 against 1837 at the peak). Raise
+            it towards 700-900 if the camera mostly looks at things within
+            arm's reach.
+
+            Re-measure on your own module: VCM assemblies vary unit to unit, and
+            the figures above are from one specific Camera Module 3.
+
+    config CAM_MOTOR_DW9807_PERIOD_US
+        int "Settling time allowed per DAC code (microseconds)"
+        range 1 65535
+        default 3000
+        help
+            Reported to the autofocus algorithm as step_period.period_in_us, and
+            used together with the timestamp of the last move to decide when the
+            ISP's focus statistics for a new lens position can be believed.
+
+            The DW9807 applies a new code immediately; what takes time is the
+            lens settling on its spring, which is closer to a fixed ring-down
+            than to something proportional to distance travelled - so this is a
+            linear approximation of a non-linear thing. The default gives a
+            coarse scan step (tens of codes) about a frame to settle.
+
+            Raised from 1000 to 3000 after the sweep: at 1000 a coarse scan step
+            of ~50 codes got only 50 ms, but a frame is 36 ms at 28 fps with two
+            buffers in flight, so the real move-to-statistics-reflect-it latency
+            is nearer 70-110 ms plus mechanical settle. The sweep allowed five
+            frames per position and produced a clean single-peaked curve, so
+            that much patience is known to be enough; 3000 gives a coarse step
+            about the same budget.
+
+            Raise it further if autofocus lands on a different position each
+            time it runs on the same static scene: that is the signature of
+            definition being sampled while the lens is still moving.
+
+endif # CAM_MOTOR_DW9807

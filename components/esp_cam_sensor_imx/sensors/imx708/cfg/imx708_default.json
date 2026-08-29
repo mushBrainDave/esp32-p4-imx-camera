@@ -186,6 +186,36 @@
             "green_luma_init": 200,
             "green_luma_step_ratio": 0.3
         },
+        "af":
+        {
+            "//": "Contrast-detect autofocus driving the DW9807 VCM at I2C 0x0c. The ISP scores 'definition' (edge energy) inside the windows below; the algorithm hill-climbs the lens position that maximises it. Requires CONFIG_ESP_IPA_AF_ALGORITHM - this block names the esp_ipa_af unit, and if that unit is not compiled in the whole IPA config fails to resolve and you lose AE and AWB along with focus.",
+
+            "//windows": "Three non-overlapping windows across the horizontal centre band of the 1920x1080 frame, weighted towards the middle. Frame edges are deliberately excluded: they are the softest part of the lens and the most likely to hold a foreground distraction, and either one pulls focus off the subject.",
+            "windows":
+            [
+                { "left": 240,  "top": 340, "width": 480, "height": 400, "weight": 1 },
+                { "left": 720,  "top": 340, "width": 480, "height": 400, "weight": 2 },
+                { "left": 1200, "top": 340, "width": 480, "height": 400, "weight": 1 }
+            ],
+
+            "//edge_thresh": "Pixels whose edge response is below this contribute nothing. Too low and sensor noise reads as detail; too high and a low-contrast scene produces no AF signal at all. Lowered from 16 to the esp_ipa default of 10 because the measured scene contrast here is modest - mean |dG/dx| ran about 2 counts on a 0-63 green scale, i.e. roughly 8/255 - so a threshold of 16 risked rejecting most real edges.",
+            "edge_thresh": 10,
+
+            "//scan_band": "Scan band, in DAC codes. MEASURED on this module with the FOCUS_SWEEP in examples/imx708_snapshot (2026-08-29), not taken from libcamera: codes 192-384 are a dead plateau (sharpness 1414/1416/1429 - flat, the lens pinned against its stop), the rise starts at 448, and the peak for a ~2 m subject was 576. Starting the scan at 380 as we first did put the first points on that flat plateau, where a hill-climbing search has no gradient to follow. The top end is less certain: the centre-band metric falls monotonically past 576, but the top-left region was still rising at 960, so there is real travel left up there for near subjects.",
+            "min_pos": 448,
+            "max_pos": 960,
+
+            "//scan_points": "Coarse pass: 10 points across 560 codes, ~56 codes apart. Fine pass: 10 more around the coarse winner. Two passes rather than one dense sweep because every point costs a lens move plus a settle.",
+            "l1_scan_points_num": 10,
+            "l2_scan_points_num": 10,
+
+            "//restart": "Re-run autofocus when the scene changes enough that the current position is probably stale: definition or luminance moving by more than these ratios, or 10 s elapsing. Deliberately loose - a twitchy restart threshold makes the lens hunt continuously, and AE settling right after start-up moves luminance on its own.",
+            "definition_high_threshold_ratio": 1.5,
+            "definition_low_threshold_ratio": 0.5,
+            "luminance_high_threshold_ratio": 1.5,
+            "luminance_low_threshold_ratio": 0.5,
+            "max_change_time": 10000000
+        },
         "acc": {
             "saturation":
             [

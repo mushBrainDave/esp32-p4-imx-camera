@@ -21,9 +21,10 @@ menu "Camera Sensor (IMX add-on)"
         bool "Support IMX708 (Raspberry Pi Camera Module 3 / NoIR 3)"
         default y
         help
-            Enable the Sony IMX708 MIPI-CSI driver. Bring-up scope is a 2x2
-            binned 2304x1296 RAW10 stream; autofocus (VCM at I2C 0x0c) and
-            PDAF are not yet driven.
+            Enable the Sony IMX708 MIPI-CSI driver. The default mode is a 2x2
+            binned 1920x1080 RAW10 stream. Autofocus lives in a separate driver
+            (the DW9807 VCM below) because it is a separate chip; PDAF is not
+            driven.
 
     if CAMERA_IMX708
 
@@ -35,5 +36,11 @@ menu "Camera Sensor (IMX add-on)"
                 esp_video probes for it automatically at start-up.
 
     endif # CAMERA_IMX708
+
+endmenu
+
+menu "Camera Motor (IMX add-on)"
+
+    rsource "motors/dw9807/Kconfig.dw9807"
 
 endmenu

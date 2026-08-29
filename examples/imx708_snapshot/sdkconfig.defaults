@@ -29,6 +29,21 @@ CONFIG_CAMERA_IMX708=y
 CONFIG_CAMERA_IMX708_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
 CONFIG_CAMERA_IMX219=n
 
+# Autofocus. The VCM is a separate chip (DW9807 at I2C 0x0c) from the sensor,
+# so it needs its own driver enabled; CAM_MOTOR_DW9807 selects
+# CAMERA_MOTOR_DEVICE_USED, which is what lets the three symbols below turn on.
+CONFIG_CAM_MOTOR_DW9807=y
+CONFIG_CAM_MOTOR_DW9807_AUTO_DETECT=y
+# These three all default to y once a motor driver exists, and are spelled out
+# so a future default change cannot quietly leave the lens unmoved - which looks
+# like a lens problem, not a config problem. Dropping any one of them gives a
+# different failure: without the IPA algorithm nothing decides where to focus,
+# without the motor controller esp_video has no way to reach the VCM, and
+# without the pipeline control the AF result is computed and then discarded.
+CONFIG_ESP_IPA_AF_ALGORITHM=y
+CONFIG_ESP_VIDEO_ENABLE_CAMERA_MOTOR_CONTROLLER=y
+CONFIG_ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR=y
+
 # FAT long filenames on the SD card
 CONFIG_FATFS_LFN_HEAP=y
 

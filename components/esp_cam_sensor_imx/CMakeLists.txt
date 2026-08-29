@@ -19,6 +19,15 @@ if(CONFIG_CAMERA_IMX708)
     list(APPEND priv_include_dirs "sensors/imx708/private_include")
 endif()
 
+# Autofocus actuators. These are separate chips from the sensor, on their own
+# I2C addresses, with their own detect array (".esp_cam_motor_detect_fn") - the
+# DW9807 is the VCM inside the Raspberry Pi Camera Module 3 alongside the IMX708.
+if(CONFIG_CAM_MOTOR_DW9807)
+    list(APPEND srcs "motors/dw9807/dw9807.c")
+    list(APPEND include_dirs "motors/dw9807/include")
+    list(APPEND priv_include_dirs "motors/dw9807/private_include")
+endif()
+
 # ISP tuning (IPA) configs live in sensors/<name>/cfg/<name>_default.json, but
 # they CANNOT be registered from here: esp_ipa reads ESP_IPA_JSON_CONFIG_FILE_PATH
 # while its own CMakeLists is processed, which has already happened by the time a
@@ -34,7 +43,7 @@ idf_component_register(
     INCLUDE_DIRS ${include_dirs}
     PRIV_INCLUDE_DIRS ${priv_include_dirs}
     REQUIRES esp_cam_sensor
-    PRIV_REQUIRES esp_driver_gpio esp_sccb_intf
+    PRIV_REQUIRES esp_driver_gpio esp_sccb_intf esp_timer
 )
 
 # Force the linker to keep each sensor's detect object so its entry lands in the
@@ -46,4 +55,8 @@ endif()
 
 if(CONFIG_CAMERA_IMX708)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-u imx708_detect")
+endif()
+
+if(CONFIG_CAM_MOTOR_DW9807)
+    target_link_libraries(${COMPONENT_LIB} INTERFACE "-u dw9807_detect")
 endif()
