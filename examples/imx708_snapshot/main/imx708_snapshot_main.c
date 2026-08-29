@@ -31,6 +31,10 @@
 #include "sdmmc_cmd.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "esp_cache.h"
+#include "esp_heap_caps.h"
+#include "esp_rom_crc.h"
+#include "driver/jpeg_encode.h"
+#include "driver/uart_vfs.h"
 
 /* ---- Camera pins (Waveshare ESP32-P4-WIFI6) ----------------------------- */
 #define CAM_SCCB_I2C_PORT   0
@@ -78,6 +82,58 @@
 #define FOCUS_SWEEP_STEP    64
 /* Frames to discard after each move, so the ISP is showing the new position. */
 #define FOCUS_SETTLE_FRAMES 4
+
+/*
+ * Where captured frames go.
+ *
+ * IMAGE_OUT_SERIAL sends them down the same USB cable that carries the log, so
+ * a capture no longer means powering off and carrying the microSD to a PC. The
+ * console runs at CONSOLE_BAUD (see sdkconfig.defaults) to make that bearable:
+ * a JPEG is a couple of seconds, a raw frame about twenty.
+ *
+ * Two formats, deliberately:
+ *
+ *   JPEG for everyday captures - small, and every tool on the receiving end can
+ *   already decode it.
+ *
+ *   RAW RGB565 for FOCUS_SWEEP. The sweep exists to measure sharpness, and
+ *   sharpness is mean |dG/dx| - a high-spatial-frequency quantity, which is
+ *   exactly what a DCT codec discards first. Worse, rate control makes the loss
+ *   content-dependent: a sharp frame carries more high-frequency energy, gets
+ *   quantised harder, and its measured sharpness is dragged toward the blurry
+ *   frames. On a curve whose peak is only ~1.25x its floor, that is not a
+ *   margin worth spending. Calibration data stays lossless.
+ *
+ * IMAGE_OUT_SD keeps the old BMP-to-card path. Off by default now that serial
+ * works; turn it on for a belt-and-braces run or if the host end is unavailable.
+ * It costs ~8 s per frame, which is most of a sweep's runtime.
+ */
+#define IMAGE_OUT_SERIAL    1
+#define IMAGE_OUT_SD        0
+
+/*
+ * JPEG_VALIDATE: send the same frame twice, once as JPEG and once as raw, so
+ * the two can be measured against each other. Answers "is JPEG good enough for
+ * this metric" with data instead of assumption. Costs an extra ~20 s.
+ */
+#define JPEG_VALIDATE       0
+#define JPEG_QUALITY        90
+/*
+ * Measured 2026-08-29 with JPEG_VALIDATE: at q90 the centre-band sharpness
+ * metric reads 1411 against 1712 for the same frame raw - 17.6% low. Part of
+ * that is DCT quantisation and part the RGB->YUV422->RGB round trip, but the
+ * direction is systematic and the size matters: the focus sweep peak was only
+ * ~1.25x its floor, so a 17.6% shift is comparable to the whole signal. Hence
+ * raw for sweeps. JPEG is for looking at, not for measuring.
+ */
+
+/*
+ * RAW_PATTERN_TEST: replace the raw payload with a deterministic counter before
+ * sending. Diagnostic only - it makes any byte the transport inserts, drops or
+ * mangles obvious on the receiving end, which image data cannot (every byte
+ * looks plausible). Turn off once the raw path is trusted.
+ */
+#define RAW_PATTERN_TEST    0
 
 /*
  * AF_DEBUG_LOG: turn on the AF algorithm's own per-scan-point logging. Set to 0
@@ -152,9 +208,12 @@ static const esp_video_init_config_t cam_config = {
     .cam_motor = motor_config,
 };
 
+#if IMAGE_OUT_SD
 static sd_pwr_ctrl_handle_t s_pwr_handle = NULL;
 static sdmmc_card_t *s_card = NULL;
+#endif
 
+#if IMAGE_OUT_SD
 static esp_err_t sd_mount(void)
 {
     /* The P4 gates SD power through on-chip LDO_VO4 — enable it first. */
@@ -185,6 +244,7 @@ static esp_err_t sd_mount(void)
     ESP_LOGI(TAG, "SD mounted; card=%s", s_card->cid.name);
     return ESP_OK;
 }
+#endif /* IMAGE_OUT_SD */
 
 /* Expand one RGB565 (LE) pixel to BGR-888 (BMP byte order). */
 static inline void rgb565_to_bgr(uint16_t px, uint8_t *bgr)
@@ -195,6 +255,7 @@ static inline void rgb565_to_bgr(uint16_t px, uint8_t *bgr)
     bgr[2] = (r5 << 3) | (r5 >> 2);
 }
 
+#if IMAGE_OUT_SD
 static esp_err_t save_bmp565(const char *path, const uint8_t *rgb565, uint32_t w, uint32_t h)
 {
     const uint32_t row_bytes = w * 3;                 /* 24-bit, no padding for even widths */
@@ -232,7 +293,211 @@ static esp_err_t save_bmp565(const char *path, const uint8_t *rgb565, uint32_t w
     ESP_LOGI(TAG, "wrote %s (%" PRIu32 " bytes)", path, file_bytes);
     return ESP_OK;
 }
+#endif /* IMAGE_OUT_SD */
 
+
+/* ---- Serial image transport --------------------------------------------- */
+#if IMAGE_OUT_SERIAL
+/*
+ * Frame format on the wire:
+ *
+ *   IMGSTART name=<n> fmt=<jpeg|rgb565> w=<w> h=<h> len=<N> crc32=<hex>
+ *   <exactly N raw bytes>
+ *   IMGEND
+ *
+ * Text header and trailer so the payload can be located in a stream that is
+ * otherwise log lines; a length and a CRC so the receiver knows it got all of
+ * it rather than guessing from delimiters that could occur in the data.
+ */
+static esp_err_t serial_send_image(const char *name, const char *fmt,
+                                   uint32_t w, uint32_t h,
+                                   const uint8_t *data, size_t len)
+{
+    uint32_t crc = esp_rom_crc32_le(0, data, len);
+
+    /*
+     * Two things would corrupt the payload if left alone. The console VFS
+     * rewrites 
+ as 
+, which would inject a byte into every 0x0A in the
+     * image; and any task that logs mid-transfer would interleave its line into
+     * the middle of the frame. Silence both for the duration.
+     */
+    uart_vfs_dev_port_set_tx_line_endings(CONFIG_ESP_CONSOLE_UART_NUM, ESP_LINE_ENDINGS_LF);
+    esp_log_level_t prev = esp_log_level_get("*");
+    esp_log_level_set("*", ESP_LOG_NONE);
+
+    printf("\nIMGSTART name=%s fmt=%s w=%" PRIu32 " h=%" PRIu32 " len=%u crc32=%08" PRIx32 "\n",
+           name, fmt, w, h, (unsigned)len, crc);
+    fflush(stdout);
+
+    size_t sent = 0;
+    unsigned chunks = 0;
+    while (sent < len) {
+        /* Chunked so the TX ring drains rather than being handed 4 MB at once. */
+        size_t n = len - sent;
+        if (n > 4096) {
+            n = 4096;
+        }
+        size_t wrote = fwrite(data + sent, 1, n, stdout);
+        if (wrote != n) {
+            break;
+        }
+        sent += wrote;
+
+        /*
+         * Yield periodically. A 4 MB frame takes ~21 s at 2 Mbaud, and without
+         * this the task never blocks, so the idle task never runs and the task
+         * watchdog fires - printing a warning and a backtrace straight into the
+         * middle of the binary payload. That is not hypothetical: it injected
+         * exactly four 917-byte blocks into a raw transfer, and because the
+         * watchdog writes directly rather than through the log tag system,
+         * silencing the logs above does not stop it.
+         */
+        if ((++chunks & 0x1f) == 0) {
+            vTaskDelay(1);
+        }
+    }
+    fflush(stdout);
+    printf("\nIMGEND\n");
+    fflush(stdout);
+
+    esp_log_level_set("*", prev);
+    uart_vfs_dev_port_set_tx_line_endings(CONFIG_ESP_CONSOLE_UART_NUM, ESP_LINE_ENDINGS_CRLF);
+
+    if (sent != len) {
+        ESP_LOGE(TAG, "%s: sent %u of %u bytes", name, (unsigned)sent, (unsigned)len);
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "sent %s (%s, %u bytes, crc32=%08" PRIx32 ")", name, fmt, (unsigned)len, crc);
+    return ESP_OK;
+}
+
+/*
+ * Encode one RGB565 frame with the P4's hardware JPEG engine and ship it.
+ *
+ * Subsampling is YUV422, not the more usual 420, for two reasons: 1080 is not a
+ * multiple of the 16-pixel MCU height that 420 needs (it is a multiple of 8, so
+ * 422 divides cleanly), and 422 keeps more chroma detail, which suits a frame
+ * that may still get measured.
+ */
+static esp_err_t serial_send_jpeg(const char *name, const uint8_t *rgb565, uint32_t w, uint32_t h)
+{
+    jpeg_encoder_handle_t enc = NULL;
+    jpeg_encode_engine_cfg_t eng = { .timeout_ms = 5000 };
+    esp_err_t ret = jpeg_new_encoder_engine(&eng, &enc);
+    ESP_RETURN_ON_ERROR(ret, TAG, "jpeg engine");
+
+    /* Worst case a JPEG can exceed a naive guess, so allow half the raw size. */
+    size_t cap = w * h;
+    jpeg_encode_memory_alloc_cfg_t mem = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
+    size_t out_alloc = 0;
+    uint8_t *out = jpeg_alloc_encoder_mem(cap, &mem, &out_alloc);
+    if (!out) {
+        jpeg_del_encoder_engine(enc);
+        ESP_LOGE(TAG, "no memory for JPEG output");
+        return ESP_ERR_NO_MEM;
+    }
+
+    jpeg_encode_cfg_t cfg = {
+        .width = w,
+        .height = h,
+        .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
+        .sub_sample = JPEG_DOWN_SAMPLING_YUV422,
+        .image_quality = JPEG_QUALITY,
+    };
+    uint32_t out_len = 0;
+    uint32_t t0 = esp_log_timestamp();
+    ret = jpeg_encoder_process(enc, &cfg, rgb565, w * h * 2, out, out_alloc, &out_len);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "JPEG q%d: %" PRIu32 " -> %" PRIu32 " bytes in %" PRIu32 " ms",
+                 JPEG_QUALITY, w * h * 2, out_len, esp_log_timestamp() - t0);
+        ret = serial_send_image(name, "jpeg", w, h, out, out_len);
+    } else {
+        ESP_LOGE(TAG, "JPEG encode failed: %s", esp_err_to_name(ret));
+    }
+
+    free(out);
+    jpeg_del_encoder_engine(enc);
+    return ret;
+}
+#endif /* IMAGE_OUT_SERIAL */
+
+/*
+ * Staging copy of the frame.
+ *
+ * Sending 4 MB at 2 Mbaud takes ~21 s, and the camera does not stop streaming
+ * while we do it. With BUFFER_COUNT buffers and one of them dequeued in our
+ * hand, the driver runs out of places to put incoming frames and recycles the
+ * one we are still reading - so the tail of a long transfer arrives as newer
+ * frame data or noise while the CRC was computed over the original. That is
+ * exactly what a raw send did: the first rows were clean, the last were junk,
+ * while the 1.4 s JPEG in the same run was byte-perfect.
+ *
+ * Copying into private memory and requeueing immediately decouples transfer
+ * time from the capture pipeline entirely. PSRAM is 32 MB; one frame is cheap.
+ */
+static uint8_t *s_stage = NULL;
+
+static const uint8_t *stage_frame(int fd, struct v4l2_buffer *buf, uint32_t w, uint32_t h,
+                                  uint8_t **buffer)
+{
+    size_t len = (size_t)w * h * 2;
+    if (!s_stage) {
+        s_stage = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!s_stage) {
+        ESP_LOGE(TAG, "no PSRAM for the staging frame; sending from the live buffer");
+        return buffer[buf->index];
+    }
+    memcpy(s_stage, buffer[buf->index], len);
+    ioctl(fd, VIDIOC_QBUF, buf);   /* hand the capture buffer straight back */
+    return s_stage;
+}
+
+/* Every raw send goes through here, so a diagnostic cannot miss a path. */
+static void send_raw(const char *name, const uint8_t *rgb565, uint32_t w, uint32_t h)
+{
+#if IMAGE_OUT_SERIAL
+    size_t len = (size_t)w * h * 2;
+#if RAW_PATTERN_TEST
+    /*
+     * Overwrite the staged copy with a counter. Image bytes all look plausible,
+     * so a dropped or inserted byte is invisible in them; against a known
+     * sequence it is not.
+     */
+    uint8_t *p = (uint8_t *)rgb565;
+    for (size_t i = 0; i < len; i++) {
+        p[i] = (uint8_t)(i * 31u + (i >> 8));
+    }
+    ESP_LOGW(TAG, "RAW_PATTERN_TEST: sending a synthetic pattern, not the image");
+#endif
+    serial_send_image(name, "rgb565", w, h, rgb565, len);
+#else
+    (void)name; (void)rgb565; (void)w; (void)h;
+#endif
+}
+
+/*
+ * One place that decides what happens to a captured frame, so the normal path
+ * and the sweep path cannot drift apart.
+ */
+static void emit_frame(const char *name, const uint8_t *rgb565, uint32_t w, uint32_t h, bool lossless)
+{
+#if IMAGE_OUT_SERIAL
+    if (lossless) {
+        send_raw(name, rgb565, w, h);
+    } else {
+        serial_send_jpeg(name, rgb565, w, h);
+#if JPEG_VALIDATE
+        /* Same frame, uncompressed, so the two can be measured against each other. */
+        send_raw(name, rgb565, w, h);
+#endif
+    }
+#else
+    (void)name; (void)rgb565; (void)w; (void)h; (void)lossless;
+#endif
+}
 
 /* ---- Focus ------------------------------------------------------------- */
 
@@ -334,7 +599,10 @@ static bool grab_frame(int fd, int type, int settle, struct v4l2_buffer *out)
  */
 static void focus_sweep(int fd, int type, uint8_t **buffer, uint32_t w, uint32_t h)
 {
+    char name[24];
+#if IMAGE_OUT_SD
     char path[48];
+#endif
     struct v4l2_buffer buf;
 
     ESP_LOGW(TAG, "FOCUS SWEEP: %d..%d step %d - this is a calibration run, not a photo",
@@ -353,9 +621,14 @@ static void focus_sweep(int fd, int type, uint8_t **buffer, uint32_t w, uint32_t
         uint32_t sharp = centre_sharpness(buffer[buf.index], w, h);
         ESP_LOGI(TAG, "  %4d | %" PRIu32, pos, sharp);
 
-        snprintf(path, sizeof(path), SD_MOUNT_POINT "/focus_%04d.bmp", pos);
-        save_bmp565(path, buffer[buf.index], w, h);
-        ioctl(fd, VIDIOC_QBUF, &buf);
+        snprintf(name, sizeof(name), "focus_%04d", pos);
+        const uint8_t *frame = stage_frame(fd, &buf, w, h, buffer);
+        /* Lossless: this frame is measurement data, not a picture to look at. */
+        emit_frame(name, frame, w, h, true);
+#if IMAGE_OUT_SD
+        snprintf(path, sizeof(path), SD_MOUNT_POINT "/%s.bmp", name);
+        save_bmp565(path, frame, w, h);
+#endif
     }
 
     ESP_LOGW(TAG, "sweep done. A flat column means the lens never moved: check that "
@@ -387,9 +660,11 @@ void app_main(void)
     esp_log_level_set("esp_ipa_af", ESP_LOG_DEBUG);
 #endif
 
+#if IMAGE_OUT_SD
     if (sd_mount() != ESP_OK) {
         return;
     }
+#endif
     if (esp_video_init(&cam_config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed");
         return;
@@ -536,14 +811,25 @@ void app_main(void)
         }
     }
 #endif
-    save_bmp565(OUT_PATH, buffer[buf.index], w, h);
-    ioctl(fd, VIDIOC_QBUF, &buf);
+    {
+        const uint8_t *frame = stage_frame(fd, &buf, w, h, buffer);
+        emit_frame("imx708", frame, w, h, false);
+#if IMAGE_OUT_SD
+        save_bmp565(OUT_PATH, frame, w, h);
+#endif
+    }
 
 done:
     ioctl(fd, VIDIOC_STREAMOFF, &type);
     close(fd);
     esp_video_deinit();
+#if IMAGE_OUT_SD
     esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, s_card);
     if (s_pwr_handle) { sd_pwr_ctrl_del_on_chip_ldo(s_pwr_handle); }
+#endif
+#if IMAGE_OUT_SD
     ESP_LOGI(TAG, "==== done — remove the SD card and open %s on your PC ====", "imx708.bmp");
+#else
+    ESP_LOGI(TAG, "==== done — frame(s) sent over serial, no card needed ====");
+#endif
 }
