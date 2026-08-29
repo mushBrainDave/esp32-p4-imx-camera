@@ -20,7 +20,9 @@ idf.py build flash monitor
 ```
 
 After boot it mounts the SD card, starts streaming, prints
-`aim the camera — capturing in 3 s...`, then grabs a frame and writes the BMP.
+`aim the camera — settling for 6 s...`, then grabs a frame and writes the BMP.
+The settle window is what gives auto-exposure, white balance and autofocus time
+to converge.
 When you see `==== done ... ====`, power off, pop the card into your PC, and
 open `imx708.bmp`.
 
@@ -37,8 +39,8 @@ The sensor's ISP tuning lives in
 `components/esp_cam_sensor_imx/sensors/imx708/cfg/imx708_default.json`, keyed
 `"IMX708"` to match `IMX708_SENSOR_NAME`. It turns on six IPA units: `agc`
 (auto-exposure), `awb` (white balance), `acc` (saturation + colour-correction
-matrix), `aen` (gamma, sharpen, contrast), `adn` (denoise) and `ian` (metering
-weights).
+matrix), `aen` (gamma, sharpen, contrast), `adn` (denoise), `ian` (metering
+weights) and `af` (autofocus).
 
 Registration happens in this example's **project** `CMakeLists.txt`, between
 `include(project.cmake)` and `project()`. It cannot go in the component's
@@ -64,8 +66,9 @@ AE or AWB.
   Espressif's OV5647 matrix because a **NoIR** module has no IR-cut filter —
   infrared contaminates all three channels and aggressive saturation amplifies
   that error.
-- **No `af` block.** The VCM at I2C 0x0c isn't driven, so the lens sits at its
-  rest position and the image is slightly soft.
+- **The `af` scan band needs calibrating.** `af.min_pos` / `af.max_pos` (380 and
+  940) come from libcamera's Camera Module 3 tuning data, not from your module.
+  See *Autofocus* below.
 
 ### A harmless build warning
 
@@ -75,6 +78,77 @@ the generated `esp_video_ipa_config.c`. esp_ipa 2.3.0's generator always emits a
 so the struct member is `float[0][0]`. The initialisers are discarded at compile
 time and `enable_sub_win` is false, so nothing reads it. It is a generator/IDF
 version mismatch, not a problem with this config.
+
+## Autofocus
+
+The lens is moved by a **DW9807 voice-coil motor at I2C 0x0c** — a separate chip
+from the IMX708, on the same bus. Driver:
+`components/esp_cam_sensor_imx/motors/dw9807/`.
+
+Focus is closed-loop contrast detection, and it takes four things that each fail
+differently if missing:
+
+| Piece | Where | If it's missing |
+| --- | --- | --- |
+| `CONFIG_CAM_MOTOR_DW9807` | `sdkconfig.defaults` | No driver; nothing can move the lens |
+| `cam_motor` entry in `esp_video_init_config_t` | `imx708_snapshot_main.c` | Motor auto-detect array never walked |
+| `CONFIG_ESP_IPA_AF_ALGORITHM` | `sdkconfig.defaults` | Nothing decides *where* to focus |
+| `CONFIG_ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR` | `sdkconfig.defaults` | AF result computed, then discarded |
+
+The ISP scores "definition" (edge energy) inside the three `af.windows`, and the
+algorithm hill-climbs the lens position that maximises it — a coarse pass of
+`l1_scan_points_num` stops, then a fine pass of `l2_scan_points_num` around the
+winner. That takes time, which is why `AIM_SECONDS` is 6.
+
+The log tells you whether it worked:
+
+```
+dw9807: detected DW9807 VCM at 0x0c, lens parked at code 450 (range 0..1023)
+imx708_snapshot: lens parked at code 450
+imx708_snapshot: focus: 450 -> 683, centre sharpness 2841
+```
+
+A `focus: 450 -> 450` with a warning means the lens never moved.
+
+### Calibrating the scan band
+
+The DAC is 10-bit, but only the middle of that travel maps to real focus
+distances — roughly code 420 at infinity to 920 at closest macro on a Camera
+Module 3. Outside that the lens is against a mechanical stop. Those figures come
+from libcamera's IMX708 tuning file, and VCM assemblies vary unit to unit, so
+verify them once on your own module:
+
+1. Set `CONFIG_ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR=n` in `sdkconfig` —
+   otherwise the AF loop fights the sweep and keeps dragging the lens back. The
+   build `#error`s if you forget.
+2. Set `FOCUS_SWEEP 1` in `main/imx708_snapshot_main.c`.
+3. Aim at something with fine detail (text, brickwork) a couple of metres away,
+   keep the camera still, and flash.
+
+It steps the DAC across the full range, prints a sharpness score per position
+and writes `focus_<code>.bmp` for each. Read the **table**, not the pictures:
+sharpness rises from the infinity end, peaks where your subject is, and falls
+towards macro. The codes where the curve goes flat at each end are the
+mechanical stops — those bound the useful range, and belong in `af.min_pos` /
+`af.max_pos`. A completely flat column means the lens never moved at all.
+
+The sharpness metric is the mean absolute horizontal gradient of the green
+channel over the frame's centre band. It is computed independently of the ISP's
+own AF statistic on purpose: if the two disagree about where best focus is, the
+problem is the `af.windows` or `edge_thresh`, not the actuator. It cannot tell
+defocus from motion blur, so hold the camera still.
+
+### Other things you may want to change
+
+- **`CONFIG_CAM_MOTOR_DW9807_INIT_POS`** (450) — where the lens parks before AF
+  converges, so it governs the first few frames. 450 sits just inside the
+  infinity end. Raise it towards 700–900 if the camera mostly looks at things
+  within arm's reach.
+- **`CONFIG_CAM_MOTOR_DW9807_PERIOD_US`** (1000) — settling time allowed per DAC
+  code. Raise it if autofocus lands somewhere different each run on the same
+  static scene; that is the signature of definition being sampled while the lens
+  is still moving.
+
 
 ## Bring-up switches (all OFF by default)
 
