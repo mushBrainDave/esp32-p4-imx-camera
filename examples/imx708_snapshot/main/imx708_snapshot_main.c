@@ -29,6 +29,7 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#include "esp_cache.h"
 
 /* ---- Camera pins (Waveshare ESP32-P4-WIFI6) ----------------------------- */
 #define CAM_SCCB_I2C_PORT   0
@@ -50,6 +51,27 @@
 
 #define OUT_PATH            SD_MOUNT_POINT "/imx708.bmp"
 #define AIM_SECONDS         3
+/*
+ * Bring-up switches.
+ *
+ * TEST_PATTERN: ask the sensor for its internal colour bars. The bars are
+ * generated after the pixel array, so they travel the whole MIPI -> CSI -> ISP
+ * path. If the BMP shows clean bars, the transport is healthy and any bad
+ * picture is optics/exposure/ISP tuning. If the bars are noise too, the fault
+ * is upstream of the ISP (link rate, lane count, data type, sensor mode).
+ *
+ * POISON_BUFFERS: fill each capture buffer with a known byte before streaming
+ * and count how much of it survives the capture. A frame that comes back ~100%
+ * poison means nothing was DMA'd into it, and the "image" is just untouched
+ * PSRAM rather than a corrupted photo.
+ *
+ * Note on the colour bars: the sensor's pattern generator clips them to its
+ * own test-pattern window (regs 0x0620-0x0627, left at power-on defaults), so
+ * the bars come out cropped at the left and right edges even when the capture
+ * path is perfect. Judge transport health by the bars that ARE drawn being
+ * clean and correctly placed, not by them reaching the frame edges.
+ */
+
 #define CAM_DEV_PATH        ESP_VIDEO_MIPI_CSI_DEVICE_NAME
 #define BUFFER_COUNT        2
 
@@ -147,6 +169,7 @@ static esp_err_t save_bmp565(const char *path, const uint8_t *rgb565, uint32_t w
     return ESP_OK;
 }
 
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "IMX708 snapshot to SD");
@@ -166,23 +189,60 @@ void app_main(void)
     struct v4l2_format fmt = { .type = type };
     ioctl(fd, VIDIOC_G_FMT, &fmt);
     uint32_t w = fmt.fmt.pix.width, h = fmt.fmt.pix.height;
-    ESP_LOGI(TAG, "format %" PRIu32 "x%" PRIu32 " fourcc=0x%08" PRIx32, w, h, fmt.fmt.pix.pixelformat);
+    uint32_t fourcc = fmt.fmt.pix.pixelformat;
+    ESP_LOGI(TAG, "format %" PRIu32 "x%" PRIu32 " fourcc=%c%c%c%c (0x%08" PRIx32 ") sizeimage=%" PRIu32,
+             w, h, (char)(fourcc & 0xff), (char)((fourcc >> 8) & 0xff),
+             (char)((fourcc >> 16) & 0xff), (char)((fourcc >> 24) & 0xff),
+             fourcc, fmt.fmt.pix.sizeimage);
+    if (fourcc != V4L2_PIX_FMT_RGB565) {
+        ESP_LOGE(TAG, "expected RGB565 from the ISP - the BMP below will be garbage");
+    }
 
     uint8_t *buffer[BUFFER_COUNT] = {0};
+#if POISON_BUFFERS
+    uint32_t buf_len[BUFFER_COUNT] = {0};
+#endif
     struct v4l2_requestbuffers req = { .count = BUFFER_COUNT, .type = type, .memory = V4L2_MEMORY_MMAP };
     ioctl(fd, VIDIOC_REQBUFS, &req);
     for (int i = 0; i < BUFFER_COUNT; i++) {
         struct v4l2_buffer b = { .type = type, .memory = V4L2_MEMORY_MMAP, .index = i };
         ioctl(fd, VIDIOC_QUERYBUF, &b);
         buffer[i] = mmap(NULL, b.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, b.m.offset);
+#if POISON_BUFFERS
+        buf_len[i] = b.length;
+        /*
+         * The buffer lives in PSRAM, so this memset lands in L2 and its tail
+         * stays dirty there. Left alone, those dirty lines shadow - and on
+         * eviction overwrite - what the DMA later writes, eating the bottom of
+         * the frame in cache-line-sized holes. Push it out before streaming.
+         */
+        memset(buffer[i], POISON_BYTE, b.length);
+        ESP_ERROR_CHECK(esp_cache_msync(buffer[i], b.length,
+                                        ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED));
+#endif
         ioctl(fd, VIDIOC_QBUF, &b);
     }
     ioctl(fd, VIDIOC_STREAMON, &type);
 
-    ESP_LOGI(TAG, "aim the camera — capturing in %d s...", AIM_SECONDS);
+#if TEST_PATTERN
+    {
+        struct v4l2_ext_control c = { .id = V4L2_CID_TEST_PATTERN, .value = 1 };
+        struct v4l2_ext_controls cs = { .ctrl_class = V4L2_CTRL_CLASS_USER, .count = 1, .controls = &c };
+        if (ioctl(fd, VIDIOC_S_EXT_CTRLS, &cs) != 0) {
+            ESP_LOGW(TAG, "test pattern not accepted - capturing the live scene instead");
+        } else {
+            ESP_LOGW(TAG, "SENSOR TEST PATTERN ON - expect colour bars, not a photo");
+        }
+    }
+#endif
+
+    ESP_LOGI(TAG, "aim the camera — settling for %d s...", AIM_SECONDS);
     uint32_t t_end = esp_log_timestamp() + AIM_SECONDS * 1000;
     struct v4l2_buffer buf;
-    /* Keep recycling frames until the aim window elapses; keep the last one. */
+    /*
+     * Recycle frames for the aim window so the ISP's AE and AWB can converge,
+     * then keep the last one.
+     */
     do {
         buf = (struct v4l2_buffer){ .type = type, .memory = V4L2_MEMORY_MMAP };
         if (ioctl(fd, VIDIOC_DQBUF, &buf) != 0) { ESP_LOGE(TAG, "DQBUF failed"); goto done; }
@@ -191,7 +251,24 @@ void app_main(void)
         }
     } while (esp_log_timestamp() < t_end);
 
-    ESP_LOGI(TAG, "captured frame: %" PRIu32 " bytes", buf.bytesused);
+    ESP_LOGI(TAG, "captured frame: bytesused=%" PRIu32 " (expected %" PRIu32 ")",
+             buf.bytesused, w * h * 2);
+#if POISON_BUFFERS
+    {
+        const uint8_t *p = buffer[buf.index];
+        uint32_t n = buf_len[buf.index], untouched = 0;
+        for (uint32_t i = 0; i < n; i++) {
+            if (p[i] == POISON_BYTE) {
+                untouched++;
+            }
+        }
+        uint32_t pct = (uint32_t)((uint64_t)untouched * 100 / n);
+        ESP_LOGI(TAG, "poison check: %" PRIu32 "%% of the buffer still reads 0x%02x", pct, POISON_BYTE);
+        if (pct > 90) {
+            ESP_LOGE(TAG, "the capture path wrote (almost) nothing - the BMP is stale memory, not a photo");
+        }
+    }
+#endif
     save_bmp565(OUT_PATH, buffer[buf.index], w, h);
     ioctl(fd, VIDIOC_QBUF, &buf);
 

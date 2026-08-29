@@ -4,7 +4,17 @@ CONFIG_IDF_TARGET="esp32p4"
 # PSRAM — frame buffers + the BMP row work live off SPIRAM
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_HEX=y
+# 200 MHz PSRAM is gated behind the experimental-features flag; without it
+# the choice silently falls back to 20 MHz, which is far too slow to absorb
+# a full-rate camera frame and every capture comes back empty.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_SPIRAM_SPEED_200M=y
+
+# DMA writes to PSRAM go through L2. The 128 KB / 64-byte-line default turns the
+# camera's stream into short bursts; 256 KB with 128-byte lines lets the DMA
+# drain in half as many, larger PSRAM transactions.
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
 
 # 32 MB flash on this board
 CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y

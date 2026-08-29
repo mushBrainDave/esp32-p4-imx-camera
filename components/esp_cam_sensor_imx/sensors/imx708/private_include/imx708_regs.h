@@ -49,6 +49,12 @@ extern "C" {
 #define IMX708_DGTL_GAIN_MAX        0xffff
 #define IMX708_DGTL_GAIN_DEFAULT    0x0100
 
+/* Quad-Bayer re-mosaic low-pass filter. Only the full-resolution mode
+   re-mosaics, so binned modes must explicitly disable it. */
+#define IMX708_REG_LPF_INTENSITY_EN 0xc428
+#define IMX708_LPF_INTENSITY_ENABLED   0x00
+#define IMX708_LPF_INTENSITY_DISABLED  0x01
+
 /* Test pattern */
 #define IMX708_REG_TEST_PATTERN_H   0x0600
 #define IMX708_REG_TEST_PATTERN_L   0x0601
