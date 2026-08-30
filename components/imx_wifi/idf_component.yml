@@ -1,0 +1,7 @@
+dependencies:
+  idf: ">=5.3"
+  # The P4 has no radio; these route esp_wifi to the ESP32-C6 over SDIO.
+  # Pinned below 3.0 deliberately: esp_hosted 3.x requires ESP-IDF >= 5.5 and
+  # this project is on 5.4.0. See docs/esp32c6-bringup.md.
+  espressif/esp_hosted: "^2.12.12"
+  espressif/esp_wifi_remote: "*"
