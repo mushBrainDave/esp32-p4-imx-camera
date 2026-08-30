@@ -1,0 +1,6 @@
+dependencies:
+  idf: ">=5.3"
+  espressif/esp_video: "*"
+  espressif/esp_h264: "*"
+  # esp_hosted / esp_wifi_remote come in through components/imx_wifi, which
+  # declares them itself so every WiFi example gets the same pinned pair.
