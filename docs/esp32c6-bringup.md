@@ -3,7 +3,50 @@
 Answers to the three questions that blocked starting this work: how the C6 is
 reachable, what it is wired to, and what ESP-IDF version the software wants.
 Gathered 2026-08-29 from the board schematic, the `esp_hosted` component itself,
-and the Waveshare wiki. Nothing here has been run on hardware yet.
+and the Waveshare wiki.
+
+## Result: the link is UP, on ESP-IDF 5.4.0 — no upgrade needed
+
+Verified on hardware 2026-08-29 by `examples/c6_link_check`, which brings up
+WiFi and scans. A scan needs a working radio, not merely a driver that accepts
+a config, so the AP list is real evidence:
+
+```
+sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+sdio_wrapper: GPIOs: CLK[18] CMD[19] D0[14] D1[15] D2[16] D3[17] Slave_Reset[54]
+transport:    Identified slave [esp32c6]
+transport:    capabilities: 0xd  ->  WLAN, HCI over SDIO, BLE only
+c6_link_check: C6 station MAC 9c:13:9e:d5:ba:e4
+c6_link_check: scan found 7 AP(s)
+```
+
+Three things this settles:
+
+1. **The pin map above is correct** — the driver's own log prints it back, and
+   the bus enumerates at 4-bit / 40 MHz.
+2. **Waveshare does ship the C6 pre-flashed.** This was the one unknown left by
+   the paper research, and it means no ESP-Prog and no soldering are needed to
+   get started.
+3. **esp_hosted 2.12.12 on IDF 5.4.0 is a working combination.** The version
+   ceiling is not a blocker for bring-up.
+
+**The one caveat: the pre-flashed slave is ancient.**
+
+```
+W transport: Version mismatch: Host [2.12.0] > Co-proc [0.0.0]
+             ==> Upgrade co-proc to avoid RPC timeouts
+```
+
+Scanning works anyway, but Espressif's own warning says to expect RPC timeouts,
+so this is a real thing to fix rather than noise to silence — and it is very
+likely to bite on anything longer-running than a scan. The good news is that
+the link working *is* what unlocks the easy fix: the slave can now be updated
+**OTA over SDIO** from the P4 (`esp_hosted`'s `host_performs_slave_ota`
+example), with no wires at all. Do that before building anything real on top.
+
+Also needed, and now in `sdkconfig.defaults`: **`CONFIG_FREERTOS_HZ=1000`**.
+esp_hosted warns at boot that the 100 Hz default causes "bus level jitters" —
+every wait on the SDIO transport rounds up to a 10 ms tick.
 
 ## 1. Pin map
 
@@ -60,18 +103,14 @@ bootloader mode meanwhile so it does not talk over SDIO during the flash.
 slave from the host; see its `examples/host_performs_slave_ota`. Espressif calls
 this the recommended path for everything after initial setup.
 
-**The open question is whether (b) is available on first boot**, and it turns on
-one unknown: *does Waveshare ship the C6 pre-flashed?* The Function EV board
-does (slave firmware v0.0.6), and Waveshare's wiki walkthrough goes straight to
-running a WiFi example with no flashing step, which implies theirs is too — but
-that is inference, not a documented promise. **Check this before buying an
-ESP-Prog.** The cheap test is to build a host app and see whether it finds a
-slave at all.
+**Resolved on hardware: Waveshare does pre-flash the C6**, so (b) is available
+from the start and no ESP-Prog is required. The slave reports itself as version
+`0.0.0` and still serves scans against a 2.12.0 host, so the version gap is
+more forgiving than expected — but Espressif warns it will cause RPC timeouts,
+so treat an OTA slave upgrade as the next step, not an optional one.
 
-Caveat that makes it matter: **host and slave must run the same esp_hosted
-version.** A stock v0.0.6 slave will very likely not talk to a 2.12.x host, so
-even a pre-flashed board probably needs one serial flash — unless the OTA path
-works across that gap. Pin both sides explicitly:
+Host and slave are still meant to run the same esp_hosted version. Pin both
+sides explicitly:
 
 ```
 idf.py add-dependency "espressif/esp_hosted^2.12.12"
@@ -116,19 +155,25 @@ Three options, and the middle one is probably wrong:
   against it, including the closed esp_ipa binary that caused the trap in the
   first place.
 
-Recommendation: **start on 5.4.0 with esp_hosted 2.12.12.** It needs no upgrade
-and answers the only question that matters first — whether the link comes up at
-all. Treat the 5.5 upgrade as a separate piece of work, decided once the radio
-is known to function, so an IDF upgrade and a first bring-up are never being
-debugged at the same time.
+Recommendation, now backed by a working link: **stay on 5.4.0 with esp_hosted
+2.12.12.** The radio works there, so an IDF upgrade buys nothing for the C6 and
+would only put the camera stack at risk. Revisit >= 5.5 only if something in
+esp_hosted 3.x is actually wanted, and decide it on the esp_ipa workaround's
+merits instead — see [[esp32p4-camera-platform-traps]] trap 5.
 
-## Suggested order
+## Where this leaves things
 
-1. Build a host app on 5.4.0 with the pinned versions above, defaults unchanged.
-2. See whether it detects a slave. That single result resolves both the
-   pre-flashed question and whether the pin map is right.
-3. If no slave: flash one over the H4 pad, matching versions.
-4. Only then consider the IDF 5.5 upgrade.
+Done: link up, pin map confirmed, versions settled, `examples/c6_link_check`
+committed as the regression test for all of it.
+
+Next, in order:
+
+1. **OTA-upgrade the slave firmware** off `0.0.0`, using esp_hosted's
+   `host_performs_slave_ota` example. Needs no hardware.
+2. Then anything real — connecting to an AP, and eventually streaming frames
+   off the board over WiFi rather than serial.
+3. The SD/SDMMC coexistence workaround only matters if the camera examples and
+   the radio end up in one build.
 
 ## Sources
 
