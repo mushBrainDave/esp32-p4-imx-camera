@@ -66,6 +66,7 @@ capture/
 shot/
 sweep/
 clip*/
+c6log*/
 
 # tools/capture.py imports mp4.py, which leaves a bytecode cache next to it.
 __pycache__/
