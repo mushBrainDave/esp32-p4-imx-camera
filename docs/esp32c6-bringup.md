@@ -182,6 +182,11 @@ Next, in order:
 
 ## Sources
 
+Command-by-command recipes for everything below — flashing the slave, running
+the link check, connecting to the router — are collected in
+[`cli-cookbook.md`](cli-cookbook.md).
+
+
 - Board schematic: `https://files.waveshare.com/wiki/ESP32-P4-WIFI6/ESP32-P4-WIFI6-datasheet.pdf`
 - Waveshare wiki: `https://www.waveshare.com/wiki/ESP32-P4-WIFI6`
 - `esp_hosted` 2.12.12 `Kconfig` and `docs/`, from the component registry

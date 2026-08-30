@@ -1,37 +1,49 @@
-# IMX708 snapshot to SD
+# IMX708 snapshot
 
-Grabs one IMX708 frame and saves it to the microSD card as a 24-bit BMP
-(`/sdcard/imx708.bmp`) you can open on any PC. Pins preset for the Waveshare
-ESP32-P4-WIFI6.
+Grabs one IMX708 frame, hardware-JPEG encodes it, and sends it down the USB
+serial link. Pins preset for the Waveshare ESP32-P4-WIFI6.
+
+**No microSD card is needed.** The card path still exists behind
+`IMAGE_OUT_SD` (default off) and writes a 24-bit BMP to `/sdcard/imx708.bmp`;
+with it off the example never touches the SD hardware. See
+[Getting frames off the board](#getting-frames-off-the-board).
+
+Frames are 1920x1080. The sensor's binned mode is 2304 wide and is **digitally
+cropped to 1920** — there is a datapath width ceiling between 1920 and 2048 px
+on the P4, above which the scene runs out and the edge columns duplicate each
+other exactly 2048 px apart. Do not "restore" the full width.
+
+For the same thing served over WiFi instead of the cable, see
+[`examples/imx708_wifi_snapshot`](../imx708_wifi_snapshot/).
 
 ## Before you run
 
-- Insert a **FAT32-formatted microSD card** into the board's TF slot.
-- Have the camera aimed at something with detail and light.
+Aim the camera at something with detail and light. That is all.
 
-## Build & flash
-
-```bash
-$env:IDF_TARGET = "esp32p4"
-```
+## Build, flash and receive — one command
 
 ```bash
-idf.py build flash monitor
+python ../../tools/capture.py --flash
 ```
 
-After boot it mounts the SD card, starts streaming, prints
-`aim the camera — settling for 6 s...`, then grabs a frame and writes the BMP.
-The settle window is what gives auto-exposure, white balance and autofocus time
-to converge.
-When you see `==== done ... ====`, power off, pop the card into your PC, and
-open `imx708.bmp`.
+That flashes, resets the board, captures the stream and writes the image out.
+**Do not use `idf.py monitor` here**: the port has a single owner, so a monitor
+left running makes `idf.py flash` fail with `Access is denied`, and a monitor
+mangles binary as it prints it, so it cannot recover the frame anyway.
+
+After boot the example starts streaming, prints
+`aim the camera — settling for 6 s...`, then grabs a frame and sends it. The
+settle window is what gives auto-exposure, white balance and autofocus time to
+converge. The run ends at `==== done ... ====` and the JPEG lands in the output
+directory.
 
 ## What you're validating
 
-- **The BMP is a real, changing photo of the scene** → the whole pipeline is
+- **The image is a real, changing photo of the scene** → the whole pipeline is
   genuinely live end-to-end. This is the visual proof.
-- Board SD pins used: CLK 43, CMD 44, D0 39, D1 40, D2 41, D3 42 (4-bit), with
-  SD power via on-chip LDO channel 4.
+- With `IMAGE_OUT_SD` on, the board SD pins used are CLK 43, CMD 44, D0 39,
+  D1 40, D2 41, D3 42 (4-bit), with SD power via **on-chip LDO channel 4** —
+  set `host.pwr_ctrl_handle` or the card never powers up.
 
 ## ISP tuning (IPA)
 
@@ -57,9 +69,14 @@ AE or AWB.
   future sensor here declares `ESP_CAM_SENSOR_GAIN` as
   `ESP_CAM_SENSOR_PARAM_TYPE_NUMBER`, the query fails and the AE silently drives
   exposure only — which looks exactly like a too-dark, too-grainy picture.
-- **`agc.anti_flicker.ac_freq` is set to 60.** If your mains is 60 Hz, change it
-  or you will see banding under artificial light. This is the single most likely
-  thing to need adjusting.
+- **`agc.anti_flicker.ac_freq` is set to 60**, for 60 Hz mains. Change it to 50
+  if yours is 50 Hz, or you may see banding under artificial light. Note that
+  moving it 50 -> 60 here made **no visible difference**: at 60 Hz the light
+  ripples at 120 Hz (8.33 ms), `anti_flicker: full` snaps exposure to integer
+  multiples of that, and in a dim room AE is already pinned near the 35 ms
+  ceiling, so the constraint is nearly non-binding. Banding shows up at *short*
+  exposures, so retest in a bright scene before concluding the setting is
+  inert.
 - **The CCM is a seed, not a calibration.** Real values come from shooting a
   colour chart under known illuminants and solving for the matrix. The rows sum
   to 1.0 so neutrals stay neutral, and it is deliberately gentler than
@@ -70,14 +87,41 @@ AE or AWB.
   940) come from libcamera's Camera Module 3 tuning data, not from your module.
   See *Autofocus* below.
 
-### A harmless build warning
+### The build warning that was not harmless
 
-The build prints several `excess elements in array initializer` warnings from
-the generated `esp_video_ipa_config.c`. esp_ipa 2.3.0's generator always emits a
-5x5 `awb.subwin_weight`, but on ESP-IDF v5.4 `ISP_AWB_WINDOW_X_NUM` is undefined
-so the struct member is `float[0][0]`. The initialisers are discarded at compile
-time and `enable_sub_win` is false, so nothing reads it. It is a generator/IDF
-version mismatch, not a problem with this config.
+This section used to say the `excess elements in array initializer` warnings
+from the generated `esp_video_ipa_config.c` were benign generator noise. **That
+was wrong, and believing it cost weeks.** They were the visible symptom of an
+ABI mismatch that silently broke autofocus.
+
+The prebuilt `esp_ipa` binary picked for us (`lib/esp32p4/v5.4-`) was compiled
+with `ISP_AWB_WINDOW_X_NUM` / `_Y_NUM` = 5. Those macros only exist in ESP-IDF
+>= v5.4.4, so on v5.4.0 `esp_ipa_stats_t::awb_subwin` collapses to `[0][0]` —
+**400 bytes shorter than the library expects**. Everything after that member
+then sits at the wrong offset: measured with a compiled `offsetof` probe,
+`af_stats` landed at 196 in a 224-byte struct while the library read it from
+596, past the end of the struct entirely. AE and AWB survived because their
+members sit *before* `awb_subwin`; AF read unrelated heap memory, so every scan
+point returned the same `definition` and the lens always parked at `min_pos`.
+
+The fix is in this example's project `CMakeLists.txt`, set globally before
+`project()` so esp_video (writes the struct), the generated config (declares it)
+and the library (reads it) all agree:
+
+```cmake
+idf_build_set_property(COMPILE_DEFINITIONS "ISP_AWB_WINDOW_X_NUM=5" APPEND)
+idf_build_set_property(COMPILE_DEFINITIONS "ISP_AWB_WINDOW_Y_NUM=5" APPEND)
+```
+
+The 400 bytes come back as inert padding, and `ESP_VIDEO_ISP_DEVICE_AWB_SUBWIN`
+stays off because it keys on the IDF version rather than these macros, so
+nothing calls sub-window APIs v5.4.0 lacks. **The warnings disappearing is now
+the confirmation that the layouts agree** — if they come back, the struct
+layouts have diverged again. Moving to IDF >= v5.4.4 defines the macros itself;
+remove the block then, or they are defined twice.
+
+General lesson: treat any struct-shaped warning against a prebuilt library as an
+ABI report, not noise.
 
 ## Autofocus
 
@@ -233,26 +277,62 @@ default choice the symbol has no prompt and kconfgen silently keeps 115200 no
 matter what `sdkconfig.defaults` says.
 
 
-## Bring-up switches (all OFF by default)
+## Bring-up switches
 
-`main/imx708_snapshot_main.c` has two switches at the top, kept for
-diagnosing a new mode or board:
+`main/imx708_snapshot_main.c` has a block of switches at the top, kept for
+diagnosing a new mode or board. Defaults in brackets.
 
-- `TEST_PATTERN 1` — the sensor emits its internal colour bars instead of the
-  scene. The bars are generated after the pixel array, so they cross the whole
-  MIPI → CSI → ISP path. **Clean bars = the transport works** and any bad photo
-  is optics/exposure/ISP tuning. **Noisy bars = the fault is upstream of the
-  ISP** (link rate, lane count, data type, sensor mode).
-- `POISON_BUFFERS 1` — each capture buffer is filled with `0xA5` before
-  streaming, and the log reports how much of it survived. `poison check: ~100%`
-  means nothing was DMA'd in and the BMP is stale PSRAM, not a photo. The fill
-  is flushed out of L2 first; without that, its dirty cache lines overwrite what
-  the DMA later writes and eat the bottom of the frame.
+| Switch | Default | What it does |
+| --- | --- | --- |
+| `IMAGE_OUT_SERIAL` | 1 | Send frames down the console UART |
+| `IMAGE_OUT_SD` | 0 | Also write a BMP to the microSD card |
+| `AF_DEBUG_LOG` | 1 | Turn on `esp_ipa_af`'s own per-scan-point logging |
+| `FOCUS_SWEEP` | 0 | Step the VCM across its range, scoring each position |
+| `JPEG_VALIDATE` | 0 | Send the same frame raw *and* as JPEG, to compare |
+| `TEST_PATTERN` | 0 | Sensor emits colour bars instead of the scene |
+| `POISON_BUFFERS` | 0 | Prefill capture buffers and count survivors |
+| `RAW_PATTERN_TEST` | 0 | Send a synthetic counter instead of the image |
+
+The four diagnostics worth understanding before you need them:
+
+- **`TEST_PATTERN`** — the bars are generated after the pixel array, so they
+  cross the whole MIPI → CSI → ISP path. **Clean bars = the transport works**
+  and any bad photo is optics/exposure/ISP tuning. **Noisy bars = the fault is
+  upstream of the ISP** (link rate, lane count, data type, sensor mode). Note
+  the sensor clips the bars to its own test-pattern window (regs
+  `0x0620`-`0x0627`, left at power-on defaults), so they come out **cropped at
+  the left and right edges even when the capture path is perfect** — judge by
+  the bars that *are* drawn being clean and correctly placed.
+- **`POISON_BUFFERS`** — each capture buffer is filled with `0xA5` before
+  streaming and the log reports how much survived. `poison check: ~100%` means
+  nothing was DMA'd in and the image is stale PSRAM, not a photo. The fill is
+  flushed out of L2 first; without that its dirty cache lines overwrite what the
+  DMA later writes and eat the bottom of the frame in cache-line-sized holes.
+- **`RAW_PATTERN_TEST`** — replaces the image with a known counter sequence
+  before sending. Every byte of image data looks plausible, so an inserted or
+  dropped byte is invisible in a photo; against a known sequence a
+  resync-and-diff prints the exact offset, length and contents of each
+  insertion. This is what identified the watchdog injections described above,
+  after several rounds of fruitless inference from image structure.
+- **`AF_DEBUG_LOG`** — `esp_ipa` ships as a closed `.a` but its `ESP_LOGD`
+  strings are intact, so `esp_log_level_set("esp_ipa_af", ESP_LOG_DEBUG)` from
+  the app is enough to make it print one line per scan point. Do **not** raise
+  `CONFIG_LOG_MAXIMUM_LEVEL` for this — it does nothing for a prebuilt library
+  and turns `ESP_LOGD` on firmware-wide.
 
 
-## If the BMP looks wrong
+## If the image looks wrong
 
 - **Colours swapped / weird** — the ISP's output byte order may differ from the
-  assumed RGB565; tell me what you see and we'll adjust `rgb565_to_bgr()`.
-- **All one colour / black** — exposure or ISP config; check the monitor log for
-  the captured `bytes=` value and the ISP warning.
+  assumed RGB565; adjust `rgb565_to_bgr()`.
+- **All one colour / black** — exposure or ISP config; check the log for the
+  captured `bytes=` value and the ISP warning. Turn on `POISON_BUFFERS` to tell
+  "nothing was captured" apart from "captured, but badly exposed".
+- **Measure it, do not eyeball it.** Row-to-row correlation near 0.99 means real
+  scene content; near 0.0 means there is no image in the buffer at all. A byte
+  histogram with heavy 0x55/0xAA bias is the signature of never-written DRAM.
+  Luma *percentiles* beat the mean — a p95 of 61 revealed an underexposure that
+  a mean of 40 understated.
+- **Never compare sharpness across scenes.** The same metric ranged 374-4102
+  across pre-autofocus captures purely from scene and exposure. Only compare
+  frames of the same scene, and prefer a within-run sweep to two separate runs.
