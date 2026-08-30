@@ -1,0 +1,9 @@
+# ESP-IDF partition table.
+#
+# The stock single-factory layout gives the app 1 MB. This image carries
+# esp_video, the IMX708 driver, esp_ipa, the WiFi stack and esp_hosted, which
+# does not fit. The board has 32 MB of flash, so 4 MB here costs nothing.
+# Name,   Type, SubType, Offset,  Size
+nvs,      data, nvs,     0x9000,  0x6000
+phy_init, data, phy,     0xf000,  0x1000
+factory,  app,  factory, 0x10000, 4M

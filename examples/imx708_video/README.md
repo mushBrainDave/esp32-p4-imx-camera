@@ -154,23 +154,33 @@ If the table is missing or its frame count disagrees with the bitstream,
 
 ## Reading the log
 
+A real run, from `clip/log.txt`:
+
 ```
 I imx708_video: H.264 1920x1072 @ 28 fps, 4000000 bit/s, GOP 28, QP 20-45
 I imx708_video: first frame: mean luma 118
 W imx708_video: RECORDING for up to 8 s - hold still
-I imx708_video: recorded 224 frames (8 IDR, 0 failed) in 8003 ms - 27.9 fps, stopped on: time
-I imx708_video: encode 9204 us mean, 14880 us worst (35714 us per frame available)
-I imx708_video: clip 1983204 bytes = 1982 kbit/s actual (asked for 4000)
+I imx708_video: recorded 217 frames (8 IDR, 0 failed) in 7966 ms - 27.2 fps, stopped on: time
+I imx708_video: encode 36290 us mean, 36761 us worst (35714 us per frame available)
+I imx708_video: clip 3883868 bytes = 3900 kbit/s actual (asked for 4000)
 ```
+
+> Earlier revisions of this section carried an invented sample log — `encode
+> 9204 us mean` at 27.9 fps — that matches no run in the tree. It cost real time
+> later, when `imx708_wifi_video` measured 36 ms and went looking for a
+> regression that had never existed. Both preserved runs here, `clip/log.txt`
+> and `clip2/log.txt`, say 36.3 ms and 27.2 fps. Paste logs; do not write them.
 
 - **mean luma** is a cheap "is there a picture in here at all" check that needs
   no decoder on either end. Near 0 or near 255 means black or blown out. A
   plausible value that is *identical on every run* means nothing is being DMA'd
   in and the clip is stale PSRAM.
-- **measured fps well under 28** means frames are being dropped between the
-  camera and the encoder. Compare `encode … worst` against the per-frame budget
-  on the same line; if the worst case is over budget the encoder is the
-  bottleneck, and lowering `VIDEO_BITRATE` or the resolution will help.
+- **encode time is ~36 ms and does not move.** That is the whole 35.7 ms frame
+  budget for 1920×1072, which is why runs land at 27.2 fps rather than 28 — the
+  encoder, not the camera, paces the loop. It is a fixed-throughput pipeline:
+  `imx708_wifi_video` swept rate control from 1 to 8 Mbit/s and moved the output
+  from 4.8 KB to 34.7 KB per frame with the time flat throughout. Lowering
+  `VIDEO_BITRATE` will *not* make it faster; only fewer or smaller frames will.
 - **`failed` above zero** is the encoder rejecting frames. `ESP_H264_ERR_OVERFLOW`
   means `ENC_OUT_BYTES` is too small for an IDR of this scene; raise it.
 - **actual bitrate far under the target** is normal for a still scene — rate

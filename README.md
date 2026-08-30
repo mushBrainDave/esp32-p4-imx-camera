@@ -18,7 +18,7 @@ generic driver. This project fills that gap.
 
 | Sensor | Module | Status |
 | ------ | ------ | ------ |
-| IMX708 | Pi Camera v3 / NoIR v3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264 |
+| IMX708 | Pi Camera v3 / NoIR v3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264, live video over WiFi |
 | IMX219 | Pi Camera v2 | 🟡 Driver written, **never run on hardware** |
 | IMX477 | Pi HQ Camera | ⚪ Planned |
 
@@ -81,6 +81,7 @@ Each example's `sdkconfig.defaults` is a working reference for all of the above.
 | [`imx708_snapshot`](examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Also carries the focus-sweep and buffer-poison diagnostics. |
 | [`imx708_video`](examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
 | [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
+| [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
 | [`imx219_capture`](examples/imx219_capture/) | The IMX219 equivalent of `imx708_capture`. **Untested on hardware.** |
 | [`c6_link_check`](examples/c6_link_check/) | Five-second answer to "is the ESP32-C6 radio alive": brings up WiFi and scans. |
 | [`c6_wifi_sta`](examples/c6_wifi_sta/) | Associates with an AP, takes a DHCP lease, proves the route out. |
@@ -110,6 +111,17 @@ HTTP. Measured sustained throughput is **6–7 Mbit/s**; a 260 KB JPEG takes
 dominates anything small. Full numbers and two non-obvious traps are in that
 example's [README](examples/imx708_wifi_snapshot/README.md), and the radio
 bring-up is written up in [`docs/esp32c6-bringup.md`](docs/esp32c6-bringup.md).
+
+`imx708_wifi_video` then serves *live* H.264 over the same link, as fragmented
+MP4 for a browser and as a raw Annex-B stream for `ffplay`. The muxer lives in
+[`components/imx_fmp4/`](components/imx_fmp4/) and compiles on the host, so the
+container can be checked against a recorded clip before anything is flashed.
+
+**Throughput on this link is not a constant.** The same `/bench` endpoint, on
+the same unchanged binary and the same −40 dBm association, measured 7.2 Mbit/s
+one day and 0.05 Mbit/s the next — with pings still at 0% loss and 4 ms, which
+is the signature of bursty 2.4 GHz interference rather than congestion. Measure
+before concluding anything about a slow stream.
 
 WiFi credentials go in a **gitignored** `wifi_credentials.h`, written from the
 committed `.example` template beside it.
@@ -155,12 +167,12 @@ Done:
 4. ~~IMX708 autofocus~~ — DW9807 VCM, working
 5. ~~Frames off the board without an SD card~~ — JPEG and H.264 over USB serial
 6. ~~WiFi~~ — ESP32-C6 radio up, HTTP server serving stills
+7. ~~Video over WiFi~~ — live H.264, fragmented MP4 muxed on the board, playing
+   in a browser. MJPEG was ruled out by the measured link ceiling (~3 fps at
+   q90); H.264 at 3 Mbit/s carries the whole 28 fps.
 
 Next:
 
-7. **Video over WiFi.** The measured 6–7 Mbit/s ceiling rules out MJPEG at full
-   quality (~3 fps); H.264 at 4 Mbit/s fits with headroom, on one held-open
-   connection.
 8. **CCM calibration** against a colour chart under known illuminants, to
    replace the seed matrix.
 9. **IMX477.**
