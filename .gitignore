@@ -70,3 +70,10 @@ c6log*/
 
 # tools/capture.py imports mp4.py, which leaves a bytecode cache next to it.
 __pycache__/
+
+# ==========================================================================
+# Secrets
+# ==========================================================================
+# examples/c6_wifi_sta reads the AP credentials from a header the user writes
+# from wifi_credentials.h.example. A PSK committed once stays in git history.
+wifi_credentials.h
