@@ -32,9 +32,9 @@
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
-#include "esp_rom_crc.h"
 #include "driver/jpeg_encode.h"
-#include "driver/uart_vfs.h"
+
+#include "imx_serial_img.h"
 
 /* ---- Camera pins (Waveshare ESP32-P4-WIFI6) ----------------------------- */
 #define CAM_SCCB_I2C_PORT   0
@@ -299,79 +299,14 @@ static esp_err_t save_bmp565(const char *path, const uint8_t *rgb565, uint32_t w
 /* ---- Serial image transport --------------------------------------------- */
 #if IMAGE_OUT_SERIAL
 /*
- * Frame format on the wire:
+ * The wire format and the three ways it can be silently corrupted live in
+ * components/imx_serial_img, so this example and imx708_video cannot drift
+ * apart on them. Short version, since it is what the receiver keys on:
  *
  *   IMGSTART name=<n> fmt=<jpeg|rgb565> w=<w> h=<h> len=<N> crc32=<hex>
  *   <exactly N raw bytes>
  *   IMGEND
- *
- * Text header and trailer so the payload can be located in a stream that is
- * otherwise log lines; a length and a CRC so the receiver knows it got all of
- * it rather than guessing from delimiters that could occur in the data.
  */
-static esp_err_t serial_send_image(const char *name, const char *fmt,
-                                   uint32_t w, uint32_t h,
-                                   const uint8_t *data, size_t len)
-{
-    uint32_t crc = esp_rom_crc32_le(0, data, len);
-
-    /*
-     * Two things would corrupt the payload if left alone. The console VFS
-     * rewrites 
- as 
-, which would inject a byte into every 0x0A in the
-     * image; and any task that logs mid-transfer would interleave its line into
-     * the middle of the frame. Silence both for the duration.
-     */
-    uart_vfs_dev_port_set_tx_line_endings(CONFIG_ESP_CONSOLE_UART_NUM, ESP_LINE_ENDINGS_LF);
-    esp_log_level_t prev = esp_log_level_get("*");
-    esp_log_level_set("*", ESP_LOG_NONE);
-
-    printf("\nIMGSTART name=%s fmt=%s w=%" PRIu32 " h=%" PRIu32 " len=%u crc32=%08" PRIx32 "\n",
-           name, fmt, w, h, (unsigned)len, crc);
-    fflush(stdout);
-
-    size_t sent = 0;
-    unsigned chunks = 0;
-    while (sent < len) {
-        /* Chunked so the TX ring drains rather than being handed 4 MB at once. */
-        size_t n = len - sent;
-        if (n > 4096) {
-            n = 4096;
-        }
-        size_t wrote = fwrite(data + sent, 1, n, stdout);
-        if (wrote != n) {
-            break;
-        }
-        sent += wrote;
-
-        /*
-         * Yield periodically. A 4 MB frame takes ~21 s at 2 Mbaud, and without
-         * this the task never blocks, so the idle task never runs and the task
-         * watchdog fires - printing a warning and a backtrace straight into the
-         * middle of the binary payload. That is not hypothetical: it injected
-         * exactly four 917-byte blocks into a raw transfer, and because the
-         * watchdog writes directly rather than through the log tag system,
-         * silencing the logs above does not stop it.
-         */
-        if ((++chunks & 0x1f) == 0) {
-            vTaskDelay(1);
-        }
-    }
-    fflush(stdout);
-    printf("\nIMGEND\n");
-    fflush(stdout);
-
-    esp_log_level_set("*", prev);
-    uart_vfs_dev_port_set_tx_line_endings(CONFIG_ESP_CONSOLE_UART_NUM, ESP_LINE_ENDINGS_CRLF);
-
-    if (sent != len) {
-        ESP_LOGE(TAG, "%s: sent %u of %u bytes", name, (unsigned)sent, (unsigned)len);
-        return ESP_FAIL;
-    }
-    ESP_LOGI(TAG, "sent %s (%s, %u bytes, crc32=%08" PRIx32 ")", name, fmt, (unsigned)len, crc);
-    return ESP_OK;
-}
 
 /*
  * Encode one RGB565 frame with the P4's hardware JPEG engine and ship it.
@@ -412,7 +347,7 @@ static esp_err_t serial_send_jpeg(const char *name, const uint8_t *rgb565, uint3
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "JPEG q%d: %" PRIu32 " -> %" PRIu32 " bytes in %" PRIu32 " ms",
                  JPEG_QUALITY, w * h * 2, out_len, esp_log_timestamp() - t0);
-        ret = serial_send_image(name, "jpeg", w, h, out, out_len);
+        ret = imx_serial_send_blob(name, "jpeg", w, h, out, out_len, NULL);
     } else {
         ESP_LOGE(TAG, "JPEG encode failed: %s", esp_err_to_name(ret));
     }
@@ -472,7 +407,7 @@ static void send_raw(const char *name, const uint8_t *rgb565, uint32_t w, uint32
     }
     ESP_LOGW(TAG, "RAW_PATTERN_TEST: sending a synthetic pattern, not the image");
 #endif
-    serial_send_image(name, "rgb565", w, h, rgb565, len);
+    imx_serial_send_blob(name, "rgb565", w, h, rgb565, len, NULL);
 #else
     (void)name; (void)rgb565; (void)w; (void)h;
 #endif
