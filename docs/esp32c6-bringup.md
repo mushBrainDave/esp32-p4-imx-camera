@@ -173,10 +173,10 @@ committed as the regression test for all of it.
 
 Next, in order:
 
-1. **OTA-upgrade the slave firmware** off `0.0.0`, using esp_hosted's
-   `host_performs_slave_ota` example. Needs no hardware.
-2. Then anything real — connecting to an AP, and eventually streaming frames
-   off the board over WiFi rather than serial.
+1. ~~**OTA-upgrade the slave firmware** off `0.0.0`~~ — done, see below.
+2. ~~Connecting to an AP~~ — done, `examples/c6_wifi_sta`, see
+   [Station connect](#station-connect--associating-with-a-real-ap). Streaming
+   frames off the board over WiFi rather than serial is the step after.
 3. The SD/SDMMC coexistence workaround only matters if the camera examples and
    the radio end up in one build.
 
@@ -251,6 +251,139 @@ the transport handshake reports `0.0.0` for a slave too old to populate that
 field, while `esp_hosted_get_coprocessor_fwversion()` is an RPC — which is why
 it timed out rather than returning a number. Do not read a `0.0.0` as "no
 firmware".
+
+## Station connect — associating with a real AP
+
+**Working on hardware 2026-08-29.** Associated, DHCP lease, and a live HTTP
+round-trip to the internet, first attempt, no retries:
+
+```
+I (2608) c6_wifi_sta: connecting to "TP-Link_14DC" ...
+I (3418) RPC_WRAP: ESP Event: Station mode: Connected
+I (5087) c6_wifi_sta: got IP 192.168.0.164  netmask 255.255.255.0  gateway 192.168.0.1
+I (5094) c6_wifi_sta: associated with "TP-Link_14DC"  bssid a8:29:48:92:14:dc
+I (5094) c6_wifi_sta: channel 3  rssi -47 dBm  authmode 3  phy bgn
+I (5095) c6_wifi_sta: dns 192.168.0.50
+I (5178) c6_wifi_sta: example.com resolved to 172.66.147.243
+I (5202) c6_wifi_sta: TCP connected to example.com:80
+I (5223) c6_wifi_sta: HTTP response: HTTP/1.1 200 OK
+
+==== done - CONNECTED, internet reachable ====
+```
+
+**Boot to HTTP 200 in 5.2 s**, and the breakdown is worth keeping because it
+says where the time actually goes:
+
+| Phase | ms | |
+| --- | --- | --- |
+| boot -> transport up, C6 booted | ~2400 | the SDIO bring-up and slave reset dominate |
+| `esp_wifi_connect` -> associated | 810 | |
+| associated -> DHCP lease | **1669** | the single largest step after transport |
+| DNS resolve | 66 | |
+| TCP connect | 24 | |
+| HTTP request -> response | 21 | |
+
+So on this board a cold start costs about 5 s before a socket is usable, and
+**DHCP is the part to attack** if that ever matters — a static lease or a
+stored one would take ~1.7 s off. Once up, round-trips are in the tens of
+milliseconds, which is the number that matters for streaming frames later.
+
+`phy bgn` — no `/ax`. The C6 is a WiFi 6 radio but this AP is 802.11n, so the
+link negotiated down; nothing to fix, but do not read a WiFi 6 co-processor as
+a WiFi 6 link.
+
+No `Version mismatch` warning appeared, which re-confirms the slave OTA to
+2.12.12 held.
+
+### Everything below was the design; the log above is the result
+
+`examples/c6_wifi_sta`, on **ESP-IDF 5.4.0**, esp_hosted 2.12.12 /
+esp_wifi_remote 1.6.4 — the same versions `c6_link_check` proved. Nothing about
+associating needed a newer IDF: `esp_wifi_connect`, `esp_netif`, DHCP and LwIP
+all run on the P4, and only the `esp_wifi_*` calls cross the SDIO bus. The
+sockets in this example are ordinary LwIP sockets.
+
+**Why a separate example rather than extending `c6_link_check`.** The link
+check answers one question — is the radio alive — in about five seconds, with
+no credentials and no network. That makes it worth keeping as a regression test
+exactly as it is; anything that needs a PSK and a working AP is a different
+kind of test, with different ways to fail.
+
+**Scanning is receive-only, so it is weaker evidence than it looks.** A scan
+proves the C6 hears. It says nothing about transmit, the 4-way handshake, or
+whether the P4's LwIP stack is really wired to the far-side radio. So this
+example goes as far as DNS plus a TCP connect to a host on the internet: the
+first thing that exercises the whole path in both directions.
+
+### Credentials
+
+The PSK lives in `main/wifi_credentials.h`, which is **gitignored**, written by
+hand from the committed `main/wifi_credentials.h.example`. A PSK committed once
+stays in git history whatever a later commit says, so this one never enters the
+tree.
+
+The header is optional at build time. It is pulled in behind `__has_include`
+and the SSID falls back to `""`, checked at run time rather than with `#if` —
+so the connect path is always compiled, and a build without credentials still
+type-checks all of it. Flashed without one, the firmware says what to write and
+exits.
+
+To find the exact SSID string the C6 can see, run `c6_link_check` — its scan
+list is the authoritative spelling, and it also shows which of your networks
+are on 2.4 GHz.
+
+**The trap this cost a flash cycle:** `__has_include` cannot put a file that
+does not exist into the depfile, so **creating `wifi_credentials.h` for the
+first time does not invalidate an object compiled without it**. Ninja sees the
+source unchanged, reuses the stale object, and the firmware prints "no
+credentials" with the header sitting right there. `main/CMakeLists.txt` now
+declares the header as an `OBJECT_DEPENDS` when it exists, which covers later
+edits; the very first appearance still needs `idf.py fullclean` or a touch of
+the source, so the runtime message says as much. Generalises to any optional
+header behind `__has_include`.
+
+### Reading the result
+
+The run is over in a few seconds and ends in one of five `==== done` lines:
+
+| Line | Meaning |
+| ---- | ------- |
+| `no credentials` | the header is missing or blank |
+| `link DOWN` | `esp_wifi_init` failed — the C6, not the AP; run `c6_link_check` |
+| `NOT connected` | the radio works, the association did not |
+| `CONNECTED, but no route out` | associated with an IP, but DNS or the route failed |
+| `CONNECTED, internet reachable` | full path, both directions |
+
+**On a failure the reason code is the entire diagnostic**, which is why nothing
+on the connect path is `ESP_ERROR_CHECK`ed — aborting would throw away the one
+number worth having. The three that come up:
+
+- `WIFI_REASON_NO_AP_FOUND` (201) — **the C6 is a 2.4 GHz-only radio.** A
+  5 GHz-only SSID is invisible to it, and a dual-band AP that publishes one
+  SSID on both bands will answer on 2.4 only. This looks exactly like a typo in
+  the SSID, so check the band before re-reading the spelling.
+- `WIFI_REASON_AUTH_FAIL` / `..._HANDSHAKE_TIMEOUT` — a wrong password, nearly
+  always.
+- `WIFI_REASON_ASSOC_FAIL` — the AP refused; MAC filtering or band steering.
+
+### Two config choices worth keeping
+
+- **`threshold.authmode` is left at its default (open).** Raising it to
+  `WPA2_PSK` is a common copy-paste from Espressif's examples and it silently
+  filters out APs below that mode — an open or WPA-only network then reports
+  `NO_AP_FOUND`, which reads as a missing AP rather than a policy. `sae_pwe_h2e`
+  is set to `WPA3_SAE_PWE_BOTH` so WPA3 APs requiring hash-to-element also work.
+- **`esp_wifi_connect()` is called from `WIFI_EVENT_STA_START`,** not straight
+  after `esp_wifi_start()`. Calling it before the driver finishes starting
+  returns `ESP_ERR_WIFI_NOT_STARTED`.
+
+`CONFIG_FREERTOS_HZ=1000` carries over from `c6_link_check` for the same reason
+— esp_hosted warns about "bus level jitters" at the 100 Hz default, because
+every SDIO transport wait rounds up to a 10 ms tick.
+
+Power save is turned off (`WIFI_PS_NONE`) once connected, with the next step in
+mind: streaming frames off the board. Power save has the AP buffer traffic
+between beacons, which turns into bursty round-trips.
 
 ## Appendix: flashing the C6 manually over serial
 

@@ -1,0 +1,24 @@
+CONFIG_IDF_TARGET="esp32p4"
+
+# The C6 co-processor. esp_wifi_remote routes esp_wifi calls to it; esp_hosted
+# carries them over SDIO. The P4↔C6 pins (CLK 18, CMD 19, D0-D3 14-17,
+# reset 54) are esp_hosted's built-in ESP32-P4 defaults and match this board's
+# schematic exactly, so nothing is overridden here.
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+
+# 32 MB flash on this board.
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Match the other examples so tools/capture.py can read the log at its default
+# baud. Only settable under ESP_CONSOLE_UART_CUSTOM; under the default choice
+# the symbol has no prompt and kconfgen silently keeps 115200.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000
+
+# esp_hosted warns at boot that it wants a 1 kHz tick: at the 100 Hz default
+# every wait on the SDIO transport rounds up to a 10 ms tick, which it reports
+# as "bus level jitters". Costs a little scheduler overhead, and the camera
+# examples do not share this build.
+CONFIG_FREERTOS_HZ=1000
