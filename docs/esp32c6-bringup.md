@@ -385,6 +385,32 @@ Power save is turned off (`WIFI_PS_NONE`) once connected, with the next step in
 mind: streaming frames off the board. Power save has the AP buffer traffic
 between beacons, which turns into bursty round-trips.
 
+## Throughput — measured 2026-08-30
+
+`examples/imx708_wifi_snapshot` puts the camera, the radio and an HTTP server in
+one image and measures the link. Full write-up and the numbers are in that
+example's README; the radio-level headlines:
+
+- **Sustained ceiling 6-7 Mbit/s (~800 KB/s)** over SDIO -> C6 -> air, measured
+  with 8 MB and 4 MB payloads. Run-to-run variance is large - two identical 8 MB
+  runs differed by 50%.
+- **TCP slow start dominates anything small.** The same 260 KB JPEG took 1.70 s
+  on a fresh connection and **0.47 s** on a warm one. Hold connections open.
+- That ceiling rules MJPEG-at-q90 out for video (~3 fps) and leaves H.264 at
+  4 Mbit/s comfortable.
+
+Two traps found doing it, both radio-level:
+
+- **esp_hosted's SDIO mempool is allocated up front from internal DMA-capable
+  RAM.** At the default queue sizes it does not fit beside the camera stack, and
+  the symptom is an assert in `prvCreateIdleTasks` before `app_main` - the
+  *idle task's* stack is the allocation that fails. `CONFIG_ESP_HOSTED_SDIO_TX_Q_SIZE`
+  / `..._RX_Q_SIZE` at 10 each halves the pool and it fits.
+- **`CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y` makes it boot and breaks bulk
+  transfer.** Every response past the initial congestion window stalls; small
+  ones keep working. Keep the transport's DMA buffers in internal RAM, whatever
+  esp_hosted's help text suggests.
+
 ## Appendix: flashing the C6 manually over serial
 
 **Not needed in normal use, and NOT TESTED HERE** — the OTA route above worked,
