@@ -26,6 +26,9 @@ dependencies.lock
 # Camera frames dumped by the snapshot example, if run from the repo tree.
 *.bmp
 *.raw
+# Recorded clips and the elementary streams they were muxed from.
+*.h264
+*.mp4
 
 # ==========================================================================
 # Editor / IDE
@@ -62,3 +65,7 @@ Desktop.ini
 capture/
 shot/
 sweep/
+clip*/
+
+# tools/capture.py imports mp4.py, which leaves a bytecode cache next to it.
+__pycache__/

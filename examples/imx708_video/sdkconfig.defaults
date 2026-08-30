@@ -1,0 +1,64 @@
+# Target
+CONFIG_IDF_TARGET="esp32p4"
+
+# PSRAM — the YUV capture buffers and the whole recorded clip live off SPIRAM.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+# 200 MHz PSRAM is gated behind the experimental-features flag; without it
+# the choice silently falls back to 20 MHz, which is far too slow to absorb
+# a full-rate camera frame and every capture comes back empty.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# DMA writes to PSRAM go through L2. The 128 KB / 64-byte-line default turns the
+# camera's stream into short bursts; 256 KB with 128-byte lines lets the DMA
+# drain in half as many, larger PSRAM transactions. This matters more here than
+# for a snapshot: the H.264 encoder reads a whole frame out of PSRAM 28 times a
+# second while the camera is writing the next one in.
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# 32 MB flash on this board
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+# esp_video: MIPI-CSI capture + ISP
+CONFIG_ESP_VIDEO_ENABLE_MIPI_CSI_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
+#
+# Note on the H.264 device: esp_video can expose the encoder as a V4L2
+# mem2mem device (/dev/video11, CONFIG_ESP_VIDEO_ENABLE_HW_H264_VIDEO_DEVICE).
+# This example deliberately does not use it and drives espressif/esp_h264
+# directly instead, matching how imx708_snapshot drives the JPEG encoder
+# through driver/jpeg_encode.h. The m2m device would mean a second set of
+# buffers, a second queue pair and a second STREAMON to keep in step, for a
+# wrapper around the same esp_h264_enc_process() call.
+
+# IMX708 driver + auto-detect
+CONFIG_CAMERA_IMX708=y
+CONFIG_CAMERA_IMX708_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
+CONFIG_CAMERA_IMX219=n
+
+# Autofocus. The VCM is a separate chip (DW9807 at I2C 0x0c) from the sensor,
+# so it needs its own driver enabled; CAM_MOTOR_DW9807 selects
+# CAMERA_MOTOR_DEVICE_USED, which is what lets the three symbols below turn on.
+CONFIG_CAM_MOTOR_DW9807=y
+CONFIG_CAM_MOTOR_DW9807_AUTO_DETECT=y
+CONFIG_ESP_IPA_AF_ALGORITHM=y
+CONFIG_ESP_VIDEO_ENABLE_CAMERA_MOTOR_CONTROLLER=y
+CONFIG_ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR=y
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Console baud. The recorded clip travels down this same link, so the default
+# 115200 is the bottleneck: a 2 MB clip would take about three minutes. At
+# 2 Mbaud it is ten seconds. The CH343 bridge on this board handles
+# multi-megabaud comfortably, and flashing is unaffected - esptool negotiates
+# its own rate - so a bad value here costs a garbled log, not a bricked board.
+# The baud is only settable under ESP_CONSOLE_UART_CUSTOM - under the default
+# choice the symbol has no prompt, and kconfgen silently keeps 115200 no matter
+# what this file says. "Custom" here changes nothing else: the TX/RX pins it
+# exposes default to GPIO 37/38 on the P4, which is exactly what the default
+# console already uses.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000
