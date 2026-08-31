@@ -3,7 +3,7 @@
 # Two ways in:
 #
 #   tag push        a tag of the form component-v<version>, e.g.
-#                   component-v0.1.0, packs and uploads. The tag's version must
+#                   component-v0.1.1, packs and uploads. The tag's version must
 #                   match `version:` in components/esp_cam_sensor_imx/
 #                   idf_component.yml - registry versions are immutable, so a
 #                   mismatch means uploading the wrong number and having to
@@ -25,9 +25,14 @@ on:
       - "component-v*"
   workflow_dispatch:
 
+# Deliberately prefixed. upload-components-ci-action reads bare COMPONENT_NAME
+# and COMPONENT_DIRECTORIES from the environment as its legacy v1 configuration,
+# so unprefixed names here get picked up as inputs this workflow never meant to
+# pass - harmless while `components:` is set, since v2 wins, but a silent
+# fallback waiting for anyone who edits that step.
 env:
-  COMPONENT_NAME: esp_cam_sensor_imx
-  COMPONENT_DIR: components/esp_cam_sensor_imx
+  IMX_COMPONENT_NAME: esp_cam_sensor_imx
+  IMX_COMPONENT_DIR: components/esp_cam_sensor_imx
 
 jobs:
   publish:
@@ -41,7 +46,7 @@ jobs:
         run: |
           tag_version="${GITHUB_REF_NAME#component-v}"
           manifest_version="$(sed -n 's/^version: *"\?\([^"]*\)"\?/\1/p' \
-            "$COMPONENT_DIR/idf_component.yml" | head -1)"
+            "$IMX_COMPONENT_DIR/idf_component.yml" | head -1)"
           echo "tag=$tag_version manifest=$manifest_version"
           if [ "$tag_version" != "$manifest_version" ]; then
             echo "::error::tag $tag_version does not match manifest $manifest_version"
@@ -61,8 +66,8 @@ jobs:
           # working directory, so it has to be absolute to land at the
           # repo root rather than inside the component.
           compote component pack \
-            --name "$COMPONENT_NAME" \
-            --project-dir "$COMPONENT_DIR" \
+            --name "$IMX_COMPONENT_NAME" \
+            --project-dir "$IMX_COMPONENT_DIR" \
             --dest-dir "$GITHUB_WORKSPACE/dist"
           archive="$(ls "$GITHUB_WORKSPACE"/dist/*.tgz | head -1)"
           echo "archive=$archive"
@@ -79,7 +84,7 @@ jobs:
       - name: Attach the archive
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.COMPONENT_NAME }}-component
+          name: ${{ env.IMX_COMPONENT_NAME }}-component
           path: dist/*.tgz
           if-no-files-found: error
 
@@ -91,6 +96,6 @@ jobs:
         # directory, as it does here.
         uses: espressif/upload-components-ci-action@v2
         with:
-          components: ${{ env.COMPONENT_NAME }}:${{ env.COMPONENT_DIR }}
+          components: ${{ env.IMX_COMPONENT_NAME }}:${{ env.IMX_COMPONENT_DIR }}
           namespace: "mushbraindave"
           api_token: ${{ secrets.IDF_COMPONENT_API_TOKEN }}

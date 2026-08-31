@@ -58,14 +58,14 @@ The driver is published to the ESP Component Registry as
 [`mushbraindave/esp_cam_sensor_imx`](https://components.espressif.com/components/mushbraindave/esp_cam_sensor_imx):
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.0"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.1"
 ```
 
 Or start from one of the three examples it ships with, which bring their own
 `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.0:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.1:imx708_capture"
 ```
 
 The component's own [README](components/esp_cam_sensor_imx/README.md) is the
