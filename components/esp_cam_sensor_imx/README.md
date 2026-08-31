@@ -107,12 +107,27 @@ worth copying.
 | [`imx708_capture`](examples/imx708_capture/) | Streams frames and logs size and brightness per frame. Start here. |
 | [`imx708_snapshot`](examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Also carries the focus-sweep and buffer-poison diagnostics. |
 | [`imx708_video`](examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
+| [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
+| [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
 
-`imx708_snapshot` and `imx708_video` ship a copy of `imx_serial_img` in their own
-`components/` directory — a framed, CRC-checked blob format that carries images
-down the console UART at 2 Mbaud, so no microSD card is needed. The host-side
-receiver, WiFi and live-streaming examples, and the bring-up write-ups live in
-the [project repository](https://github.com/mushBrainDave/esp32-p4-imx-camera).
+Each example is self-contained: the glue it needs is vendored into its own
+`components/` directory rather than shared, so it still builds after being
+copied out of the component. `imx708_snapshot` and `imx708_video` carry
+`imx_serial_img`, a framed CRC-checked blob format that sends images down the
+console UART at 2 Mbaud so no microSD card is needed. The two WiFi examples
+carry `imx_wifi`, which routes `esp_wifi` over SDIO to the board's ESP32-C6 —
+the P4 has no radio of its own — and `imx708_wifi_video` also carries
+`imx_fmp4`, a fragmented-MP4 muxer that compiles on the host.
+
+**The WiFi examples need credentials before they will associate.** Copy
+`components/imx_wifi/include/wifi_credentials.h.example` to
+`wifi_credentials.h` beside it and fill in your SSID and password. It is pulled
+in behind `__has_include`, so creating it for the first time needs an
+`idf.py fullclean`; without it the firmware builds and reports that it has no
+credentials.
+
+The host-side receiver, the board bring-up tools and the write-ups live in the
+[project repository](https://github.com/mushBrainDave/esp32-p4-imx-camera).
 
 Each example carries its own `sdkconfig.defaults` with the target included, so
 `idf.py build flash` is enough — no `set-target`, which would discard the

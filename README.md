@@ -95,17 +95,20 @@ Each example's `sdkconfig.defaults` is a working reference for all of the above.
 | [`imx708_capture`](components/esp_cam_sensor_imx/examples/imx708_capture/) | Streams frames and logs size and brightness per frame. |
 | [`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Also carries the focus-sweep and buffer-poison diagnostics. |
 | [`imx708_video`](components/esp_cam_sensor_imx/examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
-| [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
-| [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
+| [`imx708_wifi_snapshot`](components/esp_cam_sensor_imx/examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
+| [`imx708_wifi_video`](components/esp_cam_sensor_imx/examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
 | [`imx219_capture`](examples/imx219_capture/) | The IMX219 equivalent of `imx708_capture`. **Untested on hardware.** |
 | [`c6_link_check`](examples/c6_link_check/) | Five-second answer to "is the ESP32-C6 radio alive": brings up WiFi and scans. |
 | [`c6_wifi_sta`](examples/c6_wifi_sta/) | Associates with an AP, takes a DHCP lease, proves the route out. |
 
-The first three IMX708 examples live **inside the component**, under
+All five IMX708 examples live **inside the component**, under
 `components/esp_cam_sensor_imx/examples/`, so they are uploaded with it and can
-be fetched with `idf.py create-project-from-example`. The rest stay repo-only:
-they depend on `imx_wifi` and `imx_fmp4`, which are application glue rather than
-sensor drivers and are not published.
+be fetched with `idf.py create-project-from-example`. Each is self-contained:
+the glue components an example needs — `imx_serial_img`, `imx_wifi`,
+`imx_fmp4` — are vendored into its own `components/` directory rather than
+shared from the repository root, because a project created from the registry
+gets the example directory and nothing around it. The remaining top-level
+`examples/` are board bring-up tools that do not involve the sensor.
 
 Each carries its own `sdkconfig.defaults`, target included, so `idf.py build flash`
 is enough — there is no need to `set-target`, which would discard the generated
@@ -127,18 +130,19 @@ images in one command:
 python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_snapshot
 ```
 
-**WiFi**, via [`components/imx_wifi/`](components/imx_wifi/) — the P4 has no
+**WiFi**, via `imx_wifi` (vendored into each WiFi example's own
+`components/`) — the P4 has no
 radio of its own, so this goes over SDIO to the board's ESP32-C6 running
 `esp_hosted` slave firmware. `imx708_wifi_snapshot` then serves frames over
 HTTP. Measured sustained throughput is **6–7 Mbit/s**; a 260 KB JPEG takes
 0.47 s on a warm connection and 1.70 s on a cold one, because TCP slow start
 dominates anything small. Full numbers and two non-obvious traps are in that
-example's [README](examples/imx708_wifi_snapshot/README.md), and the radio
+example's [README](components/esp_cam_sensor_imx/examples/imx708_wifi_snapshot/README.md), and the radio
 bring-up is written up in [`docs/esp32c6-bringup.md`](docs/esp32c6-bringup.md).
 
 `imx708_wifi_video` then serves *live* H.264 over the same link, as fragmented
 MP4 for a browser and as a raw Annex-B stream for `ffplay`. The muxer lives in
-[`components/imx_fmp4/`](components/imx_fmp4/) and compiles on the host, so the
+`imx_fmp4`, vendored into that example, and compiles on the host, so the
 container can be checked against a recorded clip before anything is flashed.
 
 **Throughput on this link is not a constant.** The same `/bench` endpoint, on

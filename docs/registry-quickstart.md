@@ -35,7 +35,13 @@ The version is optional and defaults to the newest published. Pin it with
 line — a caret range on `0.x` covers that whole minor series, so `^0.1.1` picks
 up 0.1.2 and later but stops at 0.2.0.
 
-The other two example names are `imx708_snapshot` and `imx708_video`.
+The other example names are `imx708_snapshot`, `imx708_video`,
+`imx708_wifi_snapshot` and `imx708_wifi_video`. The two WiFi ones need a
+`wifi_credentials.h` written from the `.example` template inside their vendored
+`components/imx_wifi/include/` before they will associate — and creating that
+file for the first time needs an `idf.py fullclean`, because it is pulled in
+behind `__has_include` and so cannot appear in the depfile while it is
+missing.
 
 ```bash
 cd imx708_capture
