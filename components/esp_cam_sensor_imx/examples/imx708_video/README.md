@@ -7,14 +7,15 @@ ESP32-P4-WIFI6.
 
 This is the moving-picture counterpart to
 [`imx708_snapshot`](../imx708_snapshot/), and shares its serial transport
-(`components/imx_serial_img`), its IPA tuning config and its autofocus setup.
+(`components/imx_serial_img`, shipped inside each of the two examples that
+use it), its IPA tuning config and its autofocus setup.
 Read that example's README first if you have not — the ISP tuning, autofocus and
 "two things that will bite you" sections apply here unchanged.
 
 ## Run it
 
 ```bash
-python tools/capture.py --flash --project examples/imx708_video --out clip
+python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_video --out clip
 ```
 
 That flashes, resets the board, and listens. The run is:

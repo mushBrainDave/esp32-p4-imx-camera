@@ -1,0 +1,54 @@
+# Publish esp_cam_sensor_imx to the ESP Component Registry.
+#
+# Fires on a tag of the form component-v<version>, e.g. component-v0.1.0. The
+# tag's version must match `version:` in components/esp_cam_sensor_imx/
+# idf_component.yml - registry versions are immutable, so a mismatch means
+# uploading the wrong number and having to yank it and burn the next one.
+#
+# Needs an ESP Component Registry API token in the repository secrets as
+# IDF_COMPONENT_API_TOKEN. Generate one at
+# https://components.espressif.com/settings/tokens.
+name: Publish component
+
+on:
+  push:
+    tags:
+      - "component-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pack and inspect only - do not upload"
+        type: boolean
+        default: true
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the manifest version
+        if: startsWith(github.ref, 'refs/tags/component-v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#component-v}"
+          manifest_version="$(sed -n 's/^version: *"\?\([^"]*\)"\?/\1/p' \
+            components/esp_cam_sensor_imx/idf_component.yml | head -1)"
+          echo "tag=$tag_version manifest=$manifest_version"
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "::error::tag $tag_version does not match manifest $manifest_version"
+            exit 1
+          fi
+
+      # The examples carry override_path so a checkout builds against its own
+      # working tree. That field is meaningless once an example has been copied
+      # out of the component, and compote packs manifests through verbatim.
+      - name: Strip override_path from the example manifests
+        run: python tools/strip_example_overrides.py
+
+      - name: Upload to the ESP Component Registry
+        if: ${{ github.event_name == 'push' }}
+        uses: espressif/upload-components-ci-action@v1
+        with:
+          directories: "components/esp_cam_sensor_imx"
+          namespace: "mushbraindave"
+          api_token: ${{ secrets.IDF_COMPONENT_API_TOKEN }}

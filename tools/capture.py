@@ -9,19 +9,19 @@ board, captures the stream, and pulls the images out of it.
 
 Run it from anywhere; it works out which project to flash:
 
-    # from the repo root - defaults to examples/imx708_snapshot
+    # from the repo root - defaults to the imx708_snapshot example
     python tools/capture.py --flash
 
     # from inside any example directory
     python ../../tools/capture.py --flash
 
     # or point at a project explicitly, from anywhere
-    python tools/capture.py --flash --project examples/imx708_snapshot
+    python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_snapshot
 
     python tools/capture.py --seconds 400 --out sweep   # a FOCUS_SWEEP run
 
     # imx708_video: 6 s aiming, 8 s recording, then a couple of MB to shift
-    python tools/capture.py --flash --project examples/imx708_video --out clip
+    python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_video --out clip
 
 Payloads are framed in the stream as:
 
@@ -97,7 +97,7 @@ def resolve_project(explicit):
     if is_project(cwd):
         return cwd
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    default = os.path.join(repo, 'examples', 'imx708_snapshot')
+    default = os.path.join(repo, 'components', 'esp_cam_sensor_imx', 'examples', 'imx708_snapshot')
     return default if is_project(default) else None
 
 
@@ -216,7 +216,7 @@ def main():
     ap.add_argument('--flash', action='store_true', help='run idf.py flash first')
     ap.add_argument('--project', default=None,
                     help='ESP-IDF project to flash. Defaults to the current directory '
-                         'when it is a project, else examples/imx708_snapshot.')
+                         'when it is a project, else the imx708_snapshot example.')
     ap.add_argument('--keep-raw', action='store_true',
                     help='also keep the undecoded .raw payload alongside the .bmp')
     args = ap.parse_args()

@@ -3,7 +3,7 @@
 Live 1080p H.264 from the IMX708, over WiFi, in a browser tab. No SD card, no
 recording step, no player to install.
 
-This is [`imx708_video`](../imx708_video/) and
+This is [`imx708_video`](../../components/esp_cam_sensor_imx/examples/imx708_video/) and
 [`imx708_wifi_snapshot`](../imx708_wifi_snapshot/) joined up. The first proved
 the hardware encoder; the second proved the radio and measured what it can
 carry. What is new here is everything between them: an encoded-frame ring that
