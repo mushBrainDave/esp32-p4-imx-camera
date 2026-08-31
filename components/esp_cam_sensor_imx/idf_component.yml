@@ -1,4 +1,4 @@
-version: "0.1.1"
+version: "0.1.2"
 description: >-
   Sony IMX-series MIPI-CSI camera sensor drivers for the ESP32-P4
   esp_cam_sensor / esp_video framework, plus the DW9807 autofocus VCM. Brings
@@ -40,6 +40,11 @@ files:
     - "examples/**/sdkconfig"
     - "examples/**/sdkconfig.old"
     - "examples/**/dependencies.lock"
+    # WiFi credentials. This file is gitignored, but `compote component pack`
+    # reads the working tree rather than git, so without this line a developer
+    # who has filled in their SSID and password would publish them to a public
+    # registry. The .example template beside it is what ships.
+    - "examples/**/wifi_credentials.h"
     # Frames and clips written by the examples while running on the bench.
     - "examples/**/capture/**/*"
     - "examples/**/shot/**/*"
