@@ -40,13 +40,13 @@ log is `detected IMX708, PID=0x0708`.
 ## Install
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.0"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.1"
 ```
 
 Or start from a working example, which brings its own `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.0:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.1:imx708_capture"
 ```
 
 Then in `menuconfig`:
@@ -112,7 +112,7 @@ worth copying.
 `components/` directory — a framed, CRC-checked blob format that carries images
 down the console UART at 2 Mbaud, so no microSD card is needed. The host-side
 receiver, WiFi and live-streaming examples, and the bring-up write-ups live in
-the [project repository](https://github.com/mushBrainDave/imx708).
+the [project repository](https://github.com/mushBrainDave/esp32-p4-imx-camera).
 
 Each example carries its own `sdkconfig.defaults` with the target included, so
 `idf.py build flash` is enough — no `set-target`, which would discard the

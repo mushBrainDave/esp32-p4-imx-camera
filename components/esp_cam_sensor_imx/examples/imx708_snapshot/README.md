@@ -14,7 +14,7 @@ on the P4, above which the scene runs out and the edge columns duplicate each
 other exactly 2048 px apart. Do not "restore" the full width.
 
 For the same thing served over WiFi instead of the cable, see
-[`imx708_wifi_snapshot`](https://github.com/mushBrainDave/imx708/tree/main/examples/imx708_wifi_snapshot),
+[`imx708_wifi_snapshot`](https://github.com/mushBrainDave/esp32-p4-imx-camera/tree/main/examples/imx708_wifi_snapshot),
 in the project repository.
 
 ## Before you run

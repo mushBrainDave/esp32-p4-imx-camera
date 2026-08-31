@@ -4,9 +4,12 @@ All notable changes to `esp_cam_sensor_imx` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - 2026-08-30
+## [0.1.1] - 2026-08-30
 
 First release to the ESP Component Registry.
+
+0.1.0 was tagged but never reached the registry - the upload failed on an
+API token scope - so no version was ever created under that number.
 
 ### Added
 

@@ -1,14 +1,14 @@
-version: "0.1.0"
+version: "0.1.1"
 description: >-
   Sony IMX-series MIPI-CSI camera sensor drivers for the ESP32-P4
   esp_cam_sensor / esp_video framework, plus the DW9807 autofocus VCM. Brings
   the Raspberry Pi Camera Module 3 (IMX708) to the ESP32-P4: streaming, ISP
   tuning and autofocus. An IMX219 (Camera Module v2) driver is included but has
   not yet been run on hardware.
-url: https://github.com/mushBrainDave/imx708/tree/main/components/esp_cam_sensor_imx
-repository: https://github.com/mushBrainDave/imx708.git
-issues: https://github.com/mushBrainDave/imx708/issues
-documentation: https://github.com/mushBrainDave/imx708/blob/main/components/esp_cam_sensor_imx/README.md
+url: https://github.com/mushBrainDave/esp32-p4-imx-camera/tree/main/components/esp_cam_sensor_imx
+repository: https://github.com/mushBrainDave/esp32-p4-imx-camera.git
+issues: https://github.com/mushBrainDave/esp32-p4-imx-camera/issues
+documentation: https://github.com/mushBrainDave/esp32-p4-imx-camera/blob/main/components/esp_cam_sensor_imx/README.md
 license: "Apache-2.0"
 
 tags:
