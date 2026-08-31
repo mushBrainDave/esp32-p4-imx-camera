@@ -189,6 +189,10 @@ immutable: a wrong number has to be yanked, not overwritten.
 
 ## Docs
 
+- [`docs/registry-quickstart.md`](docs/registry-quickstart.md) — the consumer's
+  side: pulling the component off the registry, building, flashing and reading
+  the log, without this repository checked out. Includes what a working boot
+  log looks like and the failure that logs nothing.
 - [`docs/cli-cookbook.md`](docs/cli-cookbook.md) — the commands actually used to
   build, flash, capture and diagnose: stills over SD/USB/WiFi, video, the C6
   radio, and decoding a RISC-V panic. Most are not the obvious first guess.
