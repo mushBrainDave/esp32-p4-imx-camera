@@ -14,7 +14,8 @@ on the P4, above which the scene runs out and the edge columns duplicate each
 other exactly 2048 px apart. Do not "restore" the full width.
 
 For the same thing served over WiFi instead of the cable, see
-[`examples/imx708_wifi_snapshot`](../imx708_wifi_snapshot/).
+[`imx708_wifi_snapshot`](https://github.com/mushBrainDave/imx708/tree/main/examples/imx708_wifi_snapshot),
+in the project repository.
 
 ## Before you run
 
@@ -23,7 +24,7 @@ Aim the camera at something with detail and light. That is all.
 ## Build, flash and receive — one command
 
 ```bash
-python ../../tools/capture.py --flash
+python ../../../../tools/capture.py --flash
 ```
 
 That flashes, resets the board, captures the stream and writes the image out.
@@ -222,7 +223,7 @@ example never touches the SD card, so no card need be inserted.
 From this example's directory:
 
 ```bash
-python ../../tools/capture.py --flash
+python ../../../../tools/capture.py --flash
 ```
 
 or from the repo root, where it defaults to this example:

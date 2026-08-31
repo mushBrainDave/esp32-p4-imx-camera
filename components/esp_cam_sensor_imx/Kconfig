@@ -2,9 +2,14 @@ menu "Camera Sensor (IMX add-on)"
 
     config CAMERA_IMX219
         bool "Support IMX219 (Raspberry Pi Camera Module v2)"
-        default y
+        default n
         help
             Enable the Sony IMX219 MIPI-CSI driver.
+
+            Off by default: this driver has been written but has never been run
+            on hardware. Its register timing, MIPI lane rate and ISP tuning all
+            still need bench confirmation, so it is opt-in until someone
+            confirms a working stream. The IMX708 below is the tested one.
 
     if CAMERA_IMX219
 

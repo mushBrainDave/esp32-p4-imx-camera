@@ -1,4 +1,0 @@
-dependencies:
-  idf: ">=5.3"
-  espressif/esp_video: "*"
-  espressif/esp_h264: "*"

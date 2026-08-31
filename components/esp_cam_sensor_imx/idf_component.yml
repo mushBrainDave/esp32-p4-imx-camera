@@ -1,13 +1,49 @@
 version: "0.1.0"
 description: >-
-  Sony IMX-series MIPI-CSI camera sensor drivers (IMX219, and planned IMX477 /
-  IMX708) for the ESP32-P4 esp_cam_sensor framework. Brings the Raspberry Pi
-  camera modules to ESP32-P4.
-url: https://github.com/mushbraindave/esp_cam_sensor_imx
+  Sony IMX-series MIPI-CSI camera sensor drivers for the ESP32-P4
+  esp_cam_sensor / esp_video framework, plus the DW9807 autofocus VCM. Brings
+  the Raspberry Pi Camera Module 3 (IMX708) to the ESP32-P4: streaming, ISP
+  tuning and autofocus. An IMX219 (Camera Module v2) driver is included but has
+  not yet been run on hardware.
+url: https://github.com/mushBrainDave/imx708/tree/main/components/esp_cam_sensor_imx
+repository: https://github.com/mushBrainDave/imx708.git
+issues: https://github.com/mushBrainDave/imx708/issues
+documentation: https://github.com/mushBrainDave/imx708/blob/main/components/esp_cam_sensor_imx/README.md
+license: "Apache-2.0"
+
+tags:
+  - camera
+  - mipi-csi
+  - imx708
+  - imx219
+  - raspberry-pi-camera
+  - autofocus
+  - esp_cam_sensor
+
 targets:
   - esp32p4
+
 dependencies:
-  idf: ">=5.3"
-  # The core sensor framework this add-on plugs into. Pulled from the ESP
-  # component registry; pin as needed for your ESP-IDF version.
-  espressif/esp_cam_sensor: "*"
+  # Only ever built and run on ESP-IDF v5.4.0. The lower bound is what has
+  # actually been on the bench, not the oldest release that might compile.
+  idf: ">=5.4"
+  # The core sensor framework this add-on plugs into, via its
+  # .esp_cam_sensor_detect_fn / .esp_cam_motor_detect_fn linker sections.
+  espressif/esp_cam_sensor: "^2.4"
+
+files:
+  exclude:
+    # Build output and solver state from in-repo example builds. None of it
+    # belongs in the uploaded archive.
+    - "examples/**/build/**/*"
+    - "examples/**/managed_components/**/*"
+    - "examples/**/sdkconfig"
+    - "examples/**/sdkconfig.old"
+    - "examples/**/dependencies.lock"
+    # Frames and clips written by the examples while running on the bench.
+    - "examples/**/capture/**/*"
+    - "examples/**/shot/**/*"
+    # `compote component pack` resolves --dest-dir relative to --project-dir,
+    # so running it without an absolute path leaves the archive here. Keep a
+    # previous archive out of the next one.
+    - "dist/**/*"

@@ -34,7 +34,7 @@ environment not found" even though the venv exists. This works, and has to be
 one PowerShell invocation because shell state does not persist between calls:
 
 ```bash
-$env:IDF_PATH="$HOME\esp\v5.4\esp-idf"; $env:IDF_TOOLS_PATH="$HOME\.espressif"; $exp = & "$HOME\.espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe" "$env:IDF_PATH\tools\activate.py" --export 2>$null | Select-Object -Last 1; . $exp; Set-Location "$HOME\source\repos\imx708\examples\imx708_snapshot"; idf.py build
+$env:IDF_PATH="$HOME\esp\v5.4\esp-idf"; $env:IDF_TOOLS_PATH="$HOME\.espressif"; $exp = & "$HOME\.espressif\python_env\idf5.4_py3.11_env\Scripts\python.exe" "$env:IDF_PATH\tools\activate.py" --export 2>$null | Select-Object -Last 1; . $exp; Set-Location "$HOME\source\repos\imx708\components\esp_cam_sensor_imx\examples\imx708_snapshot"; idf.py build
 ```
 
 `activate.py --export` writes a temp `.ps1` and prints its path as the **last**
@@ -103,7 +103,7 @@ idf.py build 2>&1 | Select-String "binary size|Project build complete"
 ## Stills: SD card
 
 The original path, still available behind `IMAGE_OUT_SD` in
-`examples/imx708_snapshot`. Superseded by serial and then WiFi, but kept
+`components/esp_cam_sensor_imx/examples/imx708_snapshot`. Superseded by serial and then WiFi, but kept
 because it needs no host tooling at all.
 
 Set `IMAGE_OUT_SD 1` in `main/imx708_snapshot_main.c`, flash, wait for
@@ -129,7 +129,7 @@ python tools/capture.py --flash
 ```
 
 ```bash
-python tools/capture.py --flash --project examples/imx708_snapshot --out shot
+python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_snapshot --out shot
 ```
 
 Options that matter: `--seconds` to cover a longer run (a `FOCUS_SWEEP` needs
@@ -208,12 +208,12 @@ curl.exe -s --max-time 12 -D - -o NUL http://192.168.0.164/snapshot.jpg
 
 ## Video over USB
 
-`examples/imx708_video` records ~8 s of 1080p H.264 into PSRAM, then ships the
+`components/esp_cam_sensor_imx/examples/imx708_video` records ~8 s of 1080p H.264 into PSRAM, then ships the
 clip in one framed payload. Allow generous time — a couple of MB has to move
 after the recording finishes:
 
 ```bash
-python tools/capture.py --flash --project examples/imx708_video --out clip
+python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_video --out clip
 ```
 
 `capture.py` writes both the raw `.h264` elementary stream and an `.mp4` muxed

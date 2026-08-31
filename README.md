@@ -54,9 +54,24 @@ forces the object to be linked. Motors work the same way, via
 
 ### Install
 
-Copy `components/esp_cam_sensor_imx/` into your project's `components/`
-directory (alongside the managed `espressif/esp_cam_sensor` dependency), then in
-`menuconfig`:
+The driver is published to the ESP Component Registry as
+[`mushbraindave/esp_cam_sensor_imx`](https://components.espressif.com/components/mushbraindave/esp_cam_sensor_imx):
+
+```bash
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.0"
+```
+
+Or start from one of the three examples it ships with, which bring their own
+`sdkconfig.defaults`:
+
+```bash
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.0:imx708_capture"
+```
+
+The component's own [README](components/esp_cam_sensor_imx/README.md) is the
+reference for consuming it — in particular the `ESP_IPA_JSON_CONFIG_FILE_PATH`
+registration, which the application has to do and which fails silently if
+skipped. Then in `menuconfig`:
 
 - Enable **Camera Sensor (IMX add-on) → Support IMX708** (or IMX219).
 - For IMX708 autofocus, also enable **CAM_MOTOR_DW9807** plus
@@ -77,14 +92,20 @@ Each example's `sdkconfig.defaults` is a working reference for all of the above.
 | Example | What it does |
 | ------- | ------------ |
 | [`i2c_probe`](examples/i2c_probe/) | Walks the SCCB bus and reads chip IDs. The first thing to run on new hardware. |
-| [`imx708_capture`](examples/imx708_capture/) | Streams frames and logs size and brightness per frame. |
-| [`imx708_snapshot`](examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Also carries the focus-sweep and buffer-poison diagnostics. |
-| [`imx708_video`](examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
+| [`imx708_capture`](components/esp_cam_sensor_imx/examples/imx708_capture/) | Streams frames and logs size and brightness per frame. |
+| [`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Also carries the focus-sweep and buffer-poison diagnostics. |
+| [`imx708_video`](components/esp_cam_sensor_imx/examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
 | [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
 | [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
 | [`imx219_capture`](examples/imx219_capture/) | The IMX219 equivalent of `imx708_capture`. **Untested on hardware.** |
 | [`c6_link_check`](examples/c6_link_check/) | Five-second answer to "is the ESP32-C6 radio alive": brings up WiFi and scans. |
 | [`c6_wifi_sta`](examples/c6_wifi_sta/) | Associates with an AP, takes a DHCP lease, proves the route out. |
+
+The first three IMX708 examples live **inside the component**, under
+`components/esp_cam_sensor_imx/examples/`, so they are uploaded with it and can
+be fetched with `idf.py create-project-from-example`. The rest stay repo-only:
+they depend on `imx_wifi` and `imx_fmp4`, which are application glue rather than
+sensor drivers and are not published.
 
 Each carries its own `sdkconfig.defaults`, target included, so `idf.py build flash`
 is enough — there is no need to `set-target`, which would discard the generated
@@ -94,13 +115,16 @@ config and regenerate it.
 
 There is no need for a microSD card, and both paths are in-tree.
 
-**USB serial**, via [`components/imx_serial_img/`](components/imx_serial_img/) —
-a framed, CRC-checked blob format over the console UART at 2 Mbaud.
+**USB serial**, via `imx_serial_img` — a framed, CRC-checked blob format over
+the console UART at 2 Mbaud. It ships inside the two examples that use it
+([`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/components/imx_serial_img/)
+and `imx708_video`) rather than as a shared component, so each example stays
+self-contained when copied out of the registry.
 [`tools/capture.py`](tools/capture.py) flashes, resets, captures and extracts the
 images in one command:
 
 ```bash
-python tools/capture.py --flash --project examples/imx708_snapshot
+python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_snapshot
 ```
 
 **WiFi**, via [`components/imx_wifi/`](components/imx_wifi/) — the P4 has no
@@ -125,6 +149,43 @@ before concluding anything about a slow stream.
 
 WiFi credentials go in a **gitignored** `wifi_credentials.h`, written from the
 committed `.example` template beside it.
+
+## Publishing the component
+
+`components/esp_cam_sensor_imx/` is packaged for the
+[ESP Component Registry](https://components.espressif.com/). A push of a
+`component-v<version>` tag runs
+[`.github/workflows/publish-component.yml`](.github/workflows/publish-component.yml),
+which checks the tag against `version:` in the manifest, strips the examples'
+`override_path` (see below) and uploads. It needs an
+`IDF_COMPONENT_API_TOKEN` repository secret.
+
+To do it by hand, or to inspect what would be uploaded:
+
+```bash
+python tools/strip_example_overrides.py
+```
+
+```bash
+compote component pack --name esp_cam_sensor_imx --project-dir components/esp_cam_sensor_imx --dest-dir "$PWD/dist"
+```
+
+```bash
+git checkout components/esp_cam_sensor_imx/examples
+```
+
+`--dest-dir` is resolved relative to `--project-dir`, not the working
+directory, so without an absolute path the archive lands inside the component.
+To have the registry validate a version without creating it, swap `pack` for
+`upload --dry-run` (or `upload --check-only` to ask whether a version is
+already taken); both need the API token in the environment.
+
+The examples' `main/idf_component.yml` declares the driver with an
+`override_path` pointing back at this working tree, so a checkout builds and
+tests its own source instead of downloading a published version. That field is
+meaningless once an example has been copied out of the component, and `compote`
+packs manifests through verbatim — hence the strip step. Registry versions are
+immutable: a wrong number has to be yanked, not overwritten.
 
 ## Docs
 
@@ -206,7 +267,7 @@ which defines those macros itself.
 
 ## Licensing
 
-This code is **Apache-2.0**. The Linux kernel `imx219.c` / `imx708.c` used as a
+This code is **Apache-2.0** — see [LICENSE](LICENSE). The Linux kernel `imx219.c` / `imx708.c` used as a
 reference are **GPL-2.0**; only non-copyrightable facts (register addresses,
 standard initialisation values published by Sony / in the Raspberry Pi firmware)
 were used. No source lines were copied. If you believe any content here is

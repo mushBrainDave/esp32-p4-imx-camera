@@ -1,0 +1,91 @@
+# Publish esp_cam_sensor_imx to the ESP Component Registry.
+#
+# Two ways in:
+#
+#   tag push        a tag of the form component-v<version>, e.g.
+#                   component-v0.1.0, packs and uploads. The tag's version must
+#                   match `version:` in components/esp_cam_sensor_imx/
+#                   idf_component.yml - registry versions are immutable, so a
+#                   mismatch means uploading the wrong number and having to
+#                   yank it and burn the next one.
+#
+#   manual run      packs the archive, lists what is in it in the run summary
+#                   and attaches it as a build artifact, without uploading
+#                   anything. Needs no secrets, so it works before the registry
+#                   account exists.
+#
+# Uploading needs an ESP Component Registry API token in the repository secrets
+# as IDF_COMPONENT_API_TOKEN. Generate one at
+# https://components.espressif.com/settings/tokens.
+name: Publish component
+
+on:
+  push:
+    tags:
+      - "component-v*"
+  workflow_dispatch:
+
+env:
+  COMPONENT_NAME: esp_cam_sensor_imx
+  COMPONENT_DIR: components/esp_cam_sensor_imx
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the manifest version
+        if: startsWith(github.ref, 'refs/tags/component-v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#component-v}"
+          manifest_version="$(sed -n 's/^version: *"\?\([^"]*\)"\?/\1/p' \
+            "$COMPONENT_DIR/idf_component.yml" | head -1)"
+          echo "tag=$tag_version manifest=$manifest_version"
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "::error::tag $tag_version does not match manifest $manifest_version"
+            exit 1
+          fi
+
+      # The examples carry override_path so a checkout builds against its own
+      # working tree. That field is meaningless once an example has been copied
+      # out of the component, and compote packs manifests through verbatim.
+      - name: Strip override_path from the example manifests
+        run: python tools/strip_example_overrides.py
+
+      - name: Pack the component
+        run: |
+          python -m pip install --upgrade idf-component-manager
+          # --dest-dir is resolved relative to --project-dir, not the
+          # working directory, so it has to be absolute to land at the
+          # repo root rather than inside the component.
+          compote component pack \
+            --name "$COMPONENT_NAME" \
+            --project-dir "$COMPONENT_DIR" \
+            --dest-dir "$GITHUB_WORKSPACE/dist"
+          archive="$(ls "$GITHUB_WORKSPACE"/dist/*.tgz | head -1)"
+          echo "archive=$archive"
+          {
+            echo "### \`$(basename "$archive")\` — $(du -h "$archive" | cut -f1)"
+            echo
+            echo '```'
+            tar tzf "$archive"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Attached on every run, tag pushes included, so there is always a record
+      # of exactly what was uploaded under that version number.
+      - name: Attach the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.COMPONENT_NAME }}-component
+          path: dist/*.tgz
+          if-no-files-found: error
+
+      - name: Upload to the ESP Component Registry
+        if: ${{ github.event_name == 'push' }}
+        uses: espressif/upload-components-ci-action@v1
+        with:
+          directories: ${{ env.COMPONENT_DIR }}
+          namespace: "mushbraindave"
+          api_token: ${{ secrets.IDF_COMPONENT_API_TOKEN }}
