@@ -77,3 +77,8 @@ __pycache__/
 # examples/c6_wifi_sta reads the AP credentials from a header the user writes
 # from wifi_credentials.h.example. A PSK committed once stays in git history.
 wifi_credentials.h
+
+# `compote component pack` output. --dest-dir is resolved relative to
+# --project-dir, so this lands either at the repo root or inside the component
+# depending on how it was invoked.
+dist/

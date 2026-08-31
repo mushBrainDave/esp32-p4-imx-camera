@@ -164,9 +164,21 @@ To do it by hand, or to inspect what would be uploaded:
 
 ```bash
 python tools/strip_example_overrides.py
-compote component pack --name esp_cam_sensor_imx --path components/esp_cam_sensor_imx
+```
+
+```bash
+compote component pack --name esp_cam_sensor_imx --project-dir components/esp_cam_sensor_imx --dest-dir "$PWD/dist"
+```
+
+```bash
 git checkout components/esp_cam_sensor_imx/examples
 ```
+
+`--dest-dir` is resolved relative to `--project-dir`, not the working
+directory, so without an absolute path the archive lands inside the component.
+To have the registry validate a version without creating it, swap `pack` for
+`upload --dry-run` (or `upload --check-only` to ask whether a version is
+already taken); both need the API token in the environment.
 
 The examples' `main/idf_component.yml` declares the driver with an
 `override_path` pointing back at this working tree, so a checkout builds and

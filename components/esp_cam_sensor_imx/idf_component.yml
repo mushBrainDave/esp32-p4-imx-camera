@@ -43,3 +43,7 @@ files:
     # Frames and clips written by the examples while running on the bench.
     - "examples/**/capture/**/*"
     - "examples/**/shot/**/*"
+    # `compote component pack` resolves --dest-dir relative to --project-dir,
+    # so running it without an absolute path leaves the archive here. Keep a
+    # previous archive out of the next one.
+    - "dist/**/*"
