@@ -56,7 +56,7 @@ static const esp_cam_sensor_isp_info_t imx219_isp_info[] = {
             .hts = IMX219_HTS,
             .vts = 1763,                        /* 0x06e3 */
             .exp_def = IMX219_EXPOSURE_DEFAULT,
-            .gain_def = 0,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
             .tline_ns = IMX219_TLINE_NS,
             .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
         }
@@ -68,7 +68,7 @@ static const esp_cam_sensor_isp_info_t imx219_isp_info[] = {
             .hts = IMX219_HTS,
             .vts = 3526,                        /* 0x0dc6 */
             .exp_def = IMX219_EXPOSURE_DEFAULT,
-            .gain_def = 0,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
             .tline_ns = IMX219_TLINE_NS,
             .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
         }
@@ -115,6 +115,52 @@ static const esp_cam_sensor_format_t imx219_format_info[] = {
 };
 
 #define IMX219_DEFAULT_FORMAT_INDEX IMX219_FMT_1640x1232_RAW10_30FPS
+
+/* ------------------------------------------------------------------ */
+/* Gain table                                                          */
+/* ------------------------------------------------------------------ */
+/*
+ * esp_video drives AE gain as a *menu* control: it calls VIDIOC_QUERYMENU to
+ * read each entry's total gain and binary-searches for the one nearest the
+ * target, then sets the winning INDEX. So ESP_CAM_SENSOR_GAIN has to be an
+ * enumeration of gain values in milli-units (1000 = 1.00x) - declaring it as a
+ * plain number makes esp_video_cam_query_menu() reject it and the AE then
+ * silently drives exposure only, which looks like a dark, grainy picture
+ * rather than like an error.
+ *
+ * IMX219 analog gain is gain = 256 / (256 - code) for code 0..232, i.e. 1.0x
+ * to 10.667x. These 42 entries step it at roughly 1/12 stop; the values are
+ * the gains the codes actually achieve, not the ideal 1/12-stop targets, so
+ * what the AE reads back is what the sensor is really doing.
+ */
+static const uint32_t imx219_total_gain_val_map[] = {
+      1000,   1058,   1123,   1191,   1261,   1333,   1414,   1497,
+      1590,   1684,   1778,   1882,   2000,   2116,   2246,   2370,
+      2510,   2667,   2813,   3012,   3160,   3368,   3556,   3765,
+      4000,   4267,   4491,   4741,   5020,   5333,   5689,   5953,
+      6400,   6737,   7111,   7529,   8000,   8533,   8828,   9481,
+     10240,  10667,
+};
+
+static const uint8_t imx219_ana_gain_code_map[] = {
+       0,   14,   28,   41,   53,   64,   75,   85,
+      95,  104,  112,  120,  128,  135,  142,  148,
+     154,  160,  165,  171,  175,  180,  184,  188,
+     192,  196,  199,  202,  205,  208,  211,  213,
+     216,  218,  220,  222,  224,  226,  227,  229,
+     231,  232,
+};
+
+/* Index whose code (104) is the nearest entry to the gain this driver has
+   always written at set_format time, so the menu does not change the picture
+   the no-AE path produces. */
+#define IMX219_DEFAULT_GAIN_INDEX 9
+
+/* Per-device state, so the ISP can read back what it last set. */
+typedef struct {
+    uint32_t exposure_val;      /*!< current exposure, in lines */
+    uint32_t gain_index;        /*!< index into imx219_total_gain_val_map */
+} imx219_para_t;
 
 /* ------------------------------------------------------------------ */
 /* SCCB helpers (16-bit register address, 8-bit value)                 */
@@ -220,16 +266,43 @@ static esp_err_t imx219_set_vflip(esp_cam_sensor_device_t *dev, int enable)
     return imx219_set_reg_bits(dev->sccb_handle, IMX219_REG_ORIENTATION, 1, 1, enable ? 1 : 0);
 }
 
+/*
+ * Largest legal coarse integration time for the mode currently selected.
+ *
+ * Unlike the IMX708, whose VTS is fixed, the IMX219's frame length differs per
+ * mode (1763 binned, 3526 full), so the ceiling has to come from the mode
+ * rather than from a constant. Exposing 65535 - the register width - would let
+ * the AE drive integration time past the frame length, which the sensor cannot
+ * honour: the value silently does not take effect and the AE loop then sees no
+ * response to its own request.
+ */
+static uint32_t imx219_exposure_max(esp_cam_sensor_device_t *dev)
+{
+    uint32_t max = IMX219_EXPOSURE_MAX;
+    if (dev->cur_format && dev->cur_format->isp_info) {
+        uint32_t vts = dev->cur_format->isp_info->isp_v1_info.vts;
+        if (vts > (IMX219_EXPOSURE_OFFSET + IMX219_EXPOSURE_MIN)) {
+            max = vts - IMX219_EXPOSURE_OFFSET;
+        }
+    }
+    return max > IMX219_EXPOSURE_MAX ? IMX219_EXPOSURE_MAX : max;
+}
+
 /* Exposure in lines (coarse integration time). */
 static esp_err_t imx219_set_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
 {
+    uint32_t max = imx219_exposure_max(dev);
     if (lines < IMX219_EXPOSURE_MIN) {
         lines = IMX219_EXPOSURE_MIN;
     }
-    if (lines > IMX219_EXPOSURE_MAX) {
-        lines = IMX219_EXPOSURE_MAX;
+    if (lines > max) {
+        lines = max;
     }
-    return imx219_write16(dev->sccb_handle, IMX219_REG_EXPOSURE_H, (uint16_t)lines);
+    esp_err_t ret = imx219_write16(dev->sccb_handle, IMX219_REG_EXPOSURE_H, (uint16_t)lines);
+    if (ret == ESP_OK && dev->priv) {
+        ((imx219_para_t *)dev->priv)->exposure_val = lines;
+    }
+    return ret;
 }
 
 /* Analog gain: 8-bit code, gain = 256 / (256 - code). */
@@ -239,6 +312,20 @@ static esp_err_t imx219_set_analog_gain(esp_cam_sensor_device_t *dev, uint32_t c
         code = IMX219_ANA_GAIN_MAX;
     }
     return imx219_write(dev->sccb_handle, IMX219_REG_ANALOG_GAIN, (uint8_t)code);
+}
+
+/* Total gain by menu index - what the ISP's AE actually calls. */
+static esp_err_t imx219_set_gain_index(esp_cam_sensor_device_t *dev, uint32_t index)
+{
+    if (index >= ARRAY_SIZE(imx219_ana_gain_code_map)) {
+        index = ARRAY_SIZE(imx219_ana_gain_code_map) - 1;
+    }
+    esp_err_t ret = imx219_write(dev->sccb_handle, IMX219_REG_ANALOG_GAIN,
+                                 imx219_ana_gain_code_map[index]);
+    if (ret == ESP_OK && dev->priv) {
+        ((imx219_para_t *)dev->priv)->gain_index = index;
+    }
+    return ret;
 }
 
 /* Digital gain: 16-bit, 0x0100 = 1.0x. */
@@ -274,16 +361,26 @@ static esp_err_t imx219_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
     case ESP_CAM_SENSOR_EXPOSURE_VAL:
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
         qdesc->number.minimum = IMX219_EXPOSURE_MIN;
-        qdesc->number.maximum = IMX219_EXPOSURE_MAX;
+        /* Report what set_exposure will actually accept, so the AE's model of
+           the control matches the sensor's behaviour. */
+        qdesc->number.maximum = imx219_exposure_max(dev);
         qdesc->number.step = 1;
         qdesc->default_value = IMX219_EXPOSURE_DEFAULT;
+        break;
+    case ESP_CAM_SENSOR_GAIN:
+        /* Menu control: elements are total gain in milli-units, and the value
+           set later is an INDEX into this table, not a register code. */
+        qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_ENUMERATION;
+        qdesc->enumeration.count = ARRAY_SIZE(imx219_total_gain_val_map);
+        qdesc->enumeration.elements = imx219_total_gain_val_map;
+        qdesc->default_value = IMX219_DEFAULT_GAIN_INDEX;
         break;
     case ESP_CAM_SENSOR_ANGAIN:
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
         qdesc->number.minimum = IMX219_ANA_GAIN_MIN;
         qdesc->number.maximum = IMX219_ANA_GAIN_MAX;
         qdesc->number.step = 1;
-        qdesc->default_value = 0;
+        qdesc->default_value = IMX219_ANA_GAIN_DEFAULT;
         break;
     case ESP_CAM_SENSOR_DGAIN:
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
@@ -302,7 +399,23 @@ static esp_err_t imx219_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
 
 static esp_err_t imx219_get_para_value(esp_cam_sensor_device_t *dev, uint32_t id, void *arg, size_t size)
 {
-    return ESP_ERR_NOT_SUPPORTED;
+    imx219_para_t *para = (imx219_para_t *)dev->priv;
+
+    if (para == NULL || arg == NULL || size < sizeof(uint32_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    switch (id) {
+    case ESP_CAM_SENSOR_EXPOSURE_VAL:
+        *(uint32_t *)arg = para->exposure_val;
+        break;
+    case ESP_CAM_SENSOR_GAIN:
+        *(uint32_t *)arg = para->gain_index;
+        break;
+    default:
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return ESP_OK;
 }
 
 static esp_err_t imx219_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id, const void *arg, size_t size)
@@ -324,9 +437,31 @@ static esp_err_t imx219_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id
         ret = imx219_set_exposure(dev, lines);
         break;
     }
+    case ESP_CAM_SENSOR_GAIN:
+        ret = imx219_set_gain_index(dev, *(const uint32_t *)arg);
+        break;
     case ESP_CAM_SENSOR_ANGAIN:
         ret = imx219_set_analog_gain(dev, *(const uint32_t *)arg);
         break;
+    case ESP_CAM_SENSOR_GROUP_EXP_GAIN: {
+        /* The ISP prefers this: exposure and gain applied together, so a frame
+           never lands with one updated and the other not. */
+        const esp_cam_sensor_gh_exp_gain_t *g = (const esp_cam_sensor_gh_exp_gain_t *)arg;
+        uint32_t lines;
+        if (g->exposure_val != 0) {
+            lines = g->exposure_val;
+        } else if (g->exposure_us != 0) {
+            lines = (uint32_t)(((uint64_t)g->exposure_us * 1000) / IMX219_TLINE_NS);
+        } else {
+            ret = ESP_ERR_INVALID_ARG;
+            break;
+        }
+        ret = imx219_set_exposure(dev, lines);
+        if (ret == ESP_OK) {
+            ret = imx219_set_gain_index(dev, g->gain_index);
+        }
+        break;
+    }
     case ESP_CAM_SENSOR_DGAIN:
         ret = imx219_set_digital_gain(dev, *(const uint32_t *)arg);
         break;
@@ -376,11 +511,14 @@ static esp_err_t imx219_set_format(esp_cam_sensor_device_t *dev, const esp_cam_s
     ret = imx219_write_array(dev->sccb_handle, (const imx219_reginfo_t *)format->regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write mode regs failed");
 
+    /* Before the exposure write: its ceiling is derived from the mode's VTS,
+       so cur_format has to already be the mode whose registers just went in. */
+    dev->cur_format = format;
+
     /* Sensible default exposure so the first frames are not black. */
     imx219_set_exposure(dev, IMX219_EXPOSURE_DEFAULT);
-    imx219_set_analog_gain(dev, 100);
+    imx219_set_gain_index(dev, IMX219_DEFAULT_GAIN_INDEX);
 
-    dev->cur_format = format;
     ESP_LOGI(TAG, "set format: %s", format->name);
     return ret;
 }
@@ -504,11 +642,12 @@ esp_cam_sensor_device_t *imx219_detect(esp_cam_sensor_config_t *config)
         return NULL;
     }
 
-    esp_cam_sensor_device_t *dev = calloc(1, sizeof(esp_cam_sensor_device_t));
+    esp_cam_sensor_device_t *dev = calloc(1, sizeof(esp_cam_sensor_device_t) + sizeof(imx219_para_t));
     if (dev == NULL) {
         ESP_LOGE(TAG, "no memory for camera device");
         return NULL;
     }
+    dev->priv = (uint8_t *)dev + sizeof(esp_cam_sensor_device_t);
 
     dev->name = (char *)IMX219_SENSOR_NAME;
     dev->sccb_handle = config->sccb_handle;
