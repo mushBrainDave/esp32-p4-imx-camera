@@ -1,0 +1,73 @@
+# Target
+CONFIG_IDF_TARGET="esp32p4"
+
+# PSRAM — the YUV capture buffers and the whole recorded clip live off SPIRAM
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+# 200 MHz PSRAM is gated behind the experimental-features flag; without it
+# the choice silently falls back to 20 MHz, which is far too slow to absorb
+# a full-rate camera frame and every capture comes back empty.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# DMA writes to PSRAM go through L2. The 128 KB / 64-byte-line default turns the
+# camera's stream into short bursts; 256 KB with 128-byte lines lets the DMA
+# drain in half as many, larger PSRAM transactions. This matters more here than
+# for a snapshot: the H.264 encoder reads a whole frame out of PSRAM 30 times a
+# second while the camera is writing the next one in.
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# 32 MB flash on this board
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+# esp_video: MIPI-CSI capture + ISP
+CONFIG_ESP_VIDEO_ENABLE_MIPI_CSI_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
+#
+# Note on the H.264 device: esp_video can expose the encoder as a V4L2 mem2mem
+# device (/dev/video11, CONFIG_ESP_VIDEO_ENABLE_HW_H264_VIDEO_DEVICE). This
+# example deliberately does not use it and drives espressif/esp_h264 directly
+# instead, matching imx708_video. The m2m device would mean a second set of
+# buffers, a second queue pair and a second STREAMON to keep in step, for a
+# wrapper around the same esp_h264_enc_process() call.
+
+# IMX219 driver + auto-detect. The IMX708 is switched off rather than left at
+# its default: both drivers register into the same esp_cam_sensor auto-detect
+# array, and with both compiled in the probe order decides which one claims the
+# bus. They sit at different addresses (0x10 vs 0x1a) so it would work either
+# way, but a build for one sensor should not carry the other's register tables.
+CONFIG_CAMERA_IMX219=y
+CONFIG_CAMERA_IMX219_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
+# Mode 2 = 1632x1232, the 1640 default with 8 columns trimmed at the sensor's
+# readout window so the width is a whole number of 16-pixel H.264 macroblocks.
+# Not cosmetic: the H.264 core takes its line stride from the width it is given,
+# so a 1640-wide buffer encoded as 1632 shears the picture diagonally. The ISP
+# could crop instead, but only on ESP32-P4 revision v3.0 and later - esp_video
+# gates ESP_VIDEO_ISP_DEVICE_CROP on CONFIG_ESP32P4_REV_MIN_FULL >= 300, and
+# VIDIOC_S_SELECTION returns ESP_ERR_NOT_SUPPORTED on the v1.3 silicon here.
+CONFIG_CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT=2
+CONFIG_CAMERA_IMX708=n
+
+# No autofocus. The Camera Module v2 is fixed-focus and has no VCM on the bus,
+# so the motor driver, the AF algorithm and the pipeline's motor control are all
+# left off. Turning them on would cost a failed DW9807 probe at start-up and an
+# "af" block that no actuator can act on.
+CONFIG_CAM_MOTOR_DW9807=n
+CONFIG_ESP_IPA_AF_ALGORITHM=n
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Console baud. The recorded clip travels down this same link, so the default
+# 115200 is the bottleneck: a 2 MB clip would take about three minutes. At
+# 2 Mbaud it is ten seconds. The CH343 bridge on this board handles
+# multi-megabaud comfortably, and flashing is unaffected - esptool negotiates
+# its own rate - so a bad value here costs a garbled log, not a bricked board.
+# The baud is only settable under ESP_CONSOLE_UART_CUSTOM - under the default
+# choice the symbol has no prompt, and kconfgen silently keeps 115200 no matter
+# what this file says. "Custom" here changes nothing else: the TX/RX pins it
+# exposes default to GPIO 37/38 on the P4, which is exactly what the default
+# console already uses, and does not collide with the camera I2C (7/8).
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000

@@ -110,11 +110,12 @@ worth copying.
 | [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
 | [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
 | [`imx219_snapshot`](examples/imx219_snapshot/) | One still from a **Camera Module v2 / NoIR v2** (IMX219), hardware-JPEG encoded, sent down USB serial. No autofocus — the v2 is fixed-focus — and an AE convergence trace in its place. |
+| [`imx219_video`](examples/imx219_video/) | ~8 s of H.264 from the IMX219 into PSRAM, then the clip down USB serial. Measured **28.1 fps at 1632x1232**; uses the driver's 16-aligned sensor mode because the P4's ISP crop needs chip revision v3.0. |
 
 Each example is self-contained: the glue it needs is vendored into its own
 `components/` directory rather than shared, so it still builds after being
-copied out of the component. `imx708_snapshot`, `imx708_video` and
-`imx219_snapshot` carry
+copied out of the component. `imx708_snapshot`, `imx708_video`,
+`imx219_snapshot` and `imx219_video` carry
 `imx_serial_img`, a framed CRC-checked blob format that sends images down the
 console UART at 2 Mbaud so no microSD card is needed. The two WiFi examples
 carry `imx_wifi`, which routes `esp_wifi` over SDIO to the board's ESP32-C6 —
