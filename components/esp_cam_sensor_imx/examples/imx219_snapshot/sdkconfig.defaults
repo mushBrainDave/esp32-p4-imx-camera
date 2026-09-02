@@ -1,0 +1,61 @@
+# Target
+CONFIG_IDF_TARGET="esp32p4"
+
+# PSRAM — frame buffers + the BMP row work live off SPIRAM
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_HEX=y
+# 200 MHz PSRAM is gated behind the experimental-features flag; without it
+# the choice silently falls back to 20 MHz, which is far too slow to absorb
+# a full-rate camera frame and every capture comes back empty.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# DMA writes to PSRAM go through L2. The 128 KB / 64-byte-line default turns the
+# camera's stream into short bursts; 256 KB with 128-byte lines lets the DMA
+# drain in half as many, larger PSRAM transactions.
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# 32 MB flash on this board
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+
+# esp_video: MIPI-CSI capture + ISP
+CONFIG_ESP_VIDEO_ENABLE_MIPI_CSI_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE=y
+CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=y
+
+# IMX219 driver + auto-detect. The IMX708 is switched off rather than left at
+# its default: both drivers register into the same esp_cam_sensor auto-detect
+# array, and with both compiled in the probe order decides which one claims the
+# bus. They sit at different addresses (0x10 vs 0x1a) so it would work either
+# way, but a build for one sensor should not carry the other's register tables.
+CONFIG_CAMERA_IMX219=y
+CONFIG_CAMERA_IMX219_AUTO_DETECT_MIPI_INTERFACE_SENSOR=y
+CONFIG_CAMERA_IMX708=n
+
+# No autofocus. The Camera Module v2 is fixed-focus and has no VCM on the bus,
+# so the motor driver, the AF algorithm and the pipeline's motor control are all
+# left off. Turning them on would cost a failed DW9807 probe at start-up and an
+# "af" block that no actuator can act on.
+CONFIG_CAM_MOTOR_DW9807=n
+CONFIG_ESP_IPA_AF_ALGORITHM=n
+
+# FAT long filenames on the SD card
+CONFIG_FATFS_LFN_HEAP=y
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# Console baud. Captured frames travel down this same link, so the default
+# 115200 is the bottleneck: it would take ~6 minutes to shift one raw 4.0 MB
+# frame. At 2 Mbaud that is ~20 s, and a JPEG is a couple of seconds. The CH343
+# bridge on this board handles multi-megabaud comfortably. Flashing is
+# unaffected - esptool negotiates its own rate - so a bad value here costs a
+# garbled log, not a bricked board.
+# The baud is only settable under ESP_CONSOLE_UART_CUSTOM - under the default
+# choice the symbol has no prompt, and kconfgen silently keeps 115200 no matter
+# what this file says. "Custom" here changes nothing else: the TX/RX pins it
+# exposes default to GPIO 37/38 on the P4, which is exactly what the default
+# console already uses, and neither collides with the camera I2C (7/8) or the
+# SD card (39-44).
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=2000000

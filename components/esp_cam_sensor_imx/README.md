@@ -109,10 +109,12 @@ worth copying.
 | [`imx708_video`](examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
 | [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
 | [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
+| [`imx219_snapshot`](examples/imx219_snapshot/) | One still from a **Camera Module v2 / NoIR v2** (IMX219), hardware-JPEG encoded, sent down USB serial. No autofocus — the v2 is fixed-focus — and an AE convergence trace in its place. |
 
 Each example is self-contained: the glue it needs is vendored into its own
 `components/` directory rather than shared, so it still builds after being
-copied out of the component. `imx708_snapshot` and `imx708_video` carry
+copied out of the component. `imx708_snapshot`, `imx708_video` and
+`imx219_snapshot` carry
 `imx_serial_img`, a framed CRC-checked blob format that sends images down the
 console UART at 2 Mbaud so no microSD card is needed. The two WiFi examples
 carry `imx_wifi`, which routes `esp_wifi` over SDIO to the board's ESP32-C6 —
