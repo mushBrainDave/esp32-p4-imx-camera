@@ -31,12 +31,14 @@ idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx:imx708_capt
 ```
 
 The version is optional and defaults to the newest published. Pin it with
-`mushbraindave/esp_cam_sensor_imx^0.1.1:imx708_capture` if you want a specific
-line — a caret range on `0.x` covers that whole minor series, so `^0.1.1` picks
-up 0.1.2 and later but stops at 0.2.0.
+`mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture` if you want a specific
+line — a caret range on `0.x` covers that whole minor series, so `^0.2.0` picks
+up 0.2.1 and later but stops at 0.3.0. Note what that means going the other
+way: a project still pinned to `^0.1.1` will *not* pick up 0.2.0.
 
 The other example names are `imx708_snapshot`, `imx708_video`,
-`imx708_wifi_snapshot` and `imx708_wifi_video`. The two WiFi ones need a
+`imx708_wifi_snapshot`, `imx708_wifi_video`, and — for a Camera Module v2 —
+`imx219_snapshot` and `imx219_video`. The two WiFi ones need a
 `wifi_credentials.h` written from the `.example` template inside their vendored
 `components/imx_wifi/include/` before they will associate — and creating that
 file for the first time needs an `idf.py fullclean`, because it is pulled in
@@ -133,7 +135,7 @@ to **2 data lanes**. For autofocus add the DW9807 motor plus
 `ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR` — drop any one of those three and
 autofocus fails in a different way, silently, each time.
 
-The IMX219 is off by default. It has never been run on hardware.
+The IMX219 is off by default, so that a build carries only the register tables it uses. It is verified on hardware as of 0.2.0.
 
 **2. The ISP tuning config**, in the project `CMakeLists.txt`, between
 `include(project.cmake)` and `project()`. That window is the whole point:

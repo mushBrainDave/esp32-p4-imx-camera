@@ -12,7 +12,7 @@ that gap.
 | Sensor | Module | Status |
 | ------ | ------ | ------ |
 | IMX708 | Pi Camera Module 3 / NoIR 3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264 |
-| IMX219 | Pi Camera Module v2 | 🟡 Driver written, **never run on hardware** — off by default |
+| IMX219 | Pi Camera Module v2 / NoIR v2 | 🟢 Streaming, ISP tuning, stills and H.264 video — verified on hardware. Fixed-focus, so no AF. Off by default; turn it on and turn the IMX708 off |
 
 | Sensor | Mode | Format | FPS | Notes |
 | ------ | ---- | ------ | --- | ----- |
@@ -40,19 +40,20 @@ log is `detected IMX708, PID=0x0708`.
 ## Install
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.1"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.2.0"
 ```
 
 Or start from a working example, which brings its own `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.1:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture"
 ```
 
 Then in `menuconfig`:
 
-- **Camera Sensor (IMX add-on) → Support IMX708** (the IMX219 is opt-in; it has
-  never been run on hardware).
+- **Camera Sensor (IMX add-on) → Support IMX708**, or **Support IMX219** for a
+  Camera Module v2. Both work; they are separate options so a build carries only
+  the register tables it uses.
 - In the `esp_video` config, enable the MIPI-CSI video device and the ISP video
   device, and configure the CSI controller for **2 data lanes**.
 - For IMX708 autofocus, enable **Camera Motor (IMX add-on) → DW9807**, plus
@@ -109,10 +110,13 @@ worth copying.
 | [`imx708_video`](examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
 | [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
 | [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
+| [`imx219_snapshot`](examples/imx219_snapshot/) | One still from a **Camera Module v2 / NoIR v2** (IMX219), hardware-JPEG encoded, sent down USB serial. No autofocus — the v2 is fixed-focus — and an AE convergence trace in its place. |
+| [`imx219_video`](examples/imx219_video/) | ~8 s of H.264 from the IMX219 into PSRAM, then the clip down USB serial. Measured **28.1 fps at 1632x1232**; uses the driver's 16-aligned sensor mode because the P4's ISP crop needs chip revision v3.0. |
 
 Each example is self-contained: the glue it needs is vendored into its own
 `components/` directory rather than shared, so it still builds after being
-copied out of the component. `imx708_snapshot` and `imx708_video` carry
+copied out of the component. `imx708_snapshot`, `imx708_video`,
+`imx219_snapshot` and `imx219_video` carry
 `imx_serial_img`, a framed CRC-checked blob format that sends images down the
 console UART at 2 Mbaud so no microSD card is needed. The two WiFi examples
 carry `imx_wifi`, which routes `esp_wifi` over SDIO to the board's ESP32-C6 —

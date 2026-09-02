@@ -37,6 +37,7 @@ extern "C" {
 #define IMX219_REG_ANALOG_GAIN      0x0157  /*!< 8-bit, gain = 256/(256-code)      */
 #define IMX219_ANA_GAIN_MIN         0
 #define IMX219_ANA_GAIN_MAX         232
+#define IMX219_ANA_GAIN_DEFAULT     104     /*!< 1.684x; == imx219_ana_gain_code_map[9] */
 #define IMX219_REG_DIGITAL_GAIN_H   0x0158  /*!< 16-bit, 0x0100 = 1.0x            */
 #define IMX219_REG_DIGITAL_GAIN_L   0x0159
 #define IMX219_DGTL_GAIN_MIN        0x0100
@@ -45,7 +46,10 @@ extern "C" {
 #define IMX219_REG_EXPOSURE_H       0x015a  /*!< 16-bit, coarse integration time in lines */
 #define IMX219_REG_EXPOSURE_L       0x015b
 #define IMX219_EXPOSURE_MIN         4
-#define IMX219_EXPOSURE_MAX         65535
+#define IMX219_EXPOSURE_MAX         65535   /*!< register width only; the real
+                                                 ceiling is VTS - OFFSET       */
+#define IMX219_EXPOSURE_OFFSET      4       /*!< coarse integration time must
+                                                 stay <= VTS - 4               */
 #define IMX219_EXPOSURE_DEFAULT     0x0640
 
 /* Frame timing */

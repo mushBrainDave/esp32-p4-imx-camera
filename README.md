@@ -19,7 +19,7 @@ generic driver. This project fills that gap.
 | Sensor | Module | Status |
 | ------ | ------ | ------ |
 | IMX708 | Pi Camera v3 / NoIR v3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264, live video over WiFi |
-| IMX219 | Pi Camera v2 | 🟡 Driver written, **never run on hardware** |
+| IMX219 | Pi Camera v2 / NoIR v2 | 🟢 Streaming, ISP tuning, stills, H.264 video — verified on hardware. Fixed-focus, no AF |
 | IMX477 | Pi HQ Camera | ⚪ Planned |
 
 Modes implemented:
@@ -58,14 +58,14 @@ The driver is published to the ESP Component Registry as
 [`mushbraindave/esp_cam_sensor_imx`](https://components.espressif.com/components/mushbraindave/esp_cam_sensor_imx):
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.1"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.2.0"
 ```
 
-Or start from one of the three examples it ships with, which bring their own
+Or start from one of the seven examples it ships with, which bring their own
 `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.1:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture"
 ```
 
 The component's own [README](components/esp_cam_sensor_imx/README.md) is the

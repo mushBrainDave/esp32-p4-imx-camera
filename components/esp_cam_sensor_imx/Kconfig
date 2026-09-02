@@ -6,10 +6,12 @@ menu "Camera Sensor (IMX add-on)"
         help
             Enable the Sony IMX219 MIPI-CSI driver.
 
-            Off by default: this driver has been written but has never been run
-            on hardware. Its register timing, MIPI lane rate and ISP tuning all
-            still need bench confirmation, so it is opt-in until someone
-            confirms a working stream. The IMX708 below is the tested one.
+            Verified on hardware as of 0.2.0: streaming, auto-exposure through
+            esp_video's 3A loop, stills and H.264 video.
+
+            Still off by default only because a build should not carry two
+            sensors' register tables when it uses one. Turn it on for an IMX219
+            and turn CAMERA_IMX708 off.
 
     if CAMERA_IMX219
 
@@ -19,6 +21,26 @@ menu "Camera Sensor (IMX add-on)"
             help
                 Register the IMX219 in the esp_cam_sensor auto-detect list so
                 esp_video probes for it automatically at start-up.
+
+        config CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT
+            int "Default MIPI-CSI mode index"
+            default 0
+            range 0 2
+            help
+                Which entry of the driver's mode table the sensor comes up in.
+
+                  0 - 1640x1232 RAW10 30fps, 2x2 binned, full field of view.
+                      The general-purpose default.
+                  1 - 3280x2464 RAW10 15fps, full resolution. Note this is
+                      wider than the ESP32-P4's ~1920 px datapath limit and
+                      will produce duplicated columns; it is not usable yet.
+                  2 - 1632x1232 RAW10 30fps. Mode 0 with 8 columns trimmed so
+                      the width is a whole number of 16-pixel H.264
+                      macroblocks. Choose this for video: the P4's ISP crop
+                      only exists on chip revision v3.0 and later, and the
+                      H.264 core derives its line stride from the width it is
+                      given, so a non-multiple-of-16 width shears the picture.
+                      Costs 0.5% of the horizontal field of view.
 
     endif # CAMERA_IMX219
 
