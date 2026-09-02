@@ -12,7 +12,7 @@ that gap.
 | Sensor | Module | Status |
 | ------ | ------ | ------ |
 | IMX708 | Pi Camera Module 3 / NoIR 3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264 |
-| IMX219 | Pi Camera Module v2 | 🟡 Driver written, **never run on hardware** — off by default |
+| IMX219 | Pi Camera Module v2 / NoIR v2 | 🟢 Streaming, ISP tuning, stills and H.264 video — verified on hardware. Fixed-focus, so no AF. Off by default; turn it on and turn the IMX708 off |
 
 | Sensor | Mode | Format | FPS | Notes |
 | ------ | ---- | ------ | --- | ----- |
@@ -40,19 +40,20 @@ log is `detected IMX708, PID=0x0708`.
 ## Install
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.1.1"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.2.0"
 ```
 
 Or start from a working example, which brings its own `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.1.1:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture"
 ```
 
 Then in `menuconfig`:
 
-- **Camera Sensor (IMX add-on) → Support IMX708** (the IMX219 is opt-in; it has
-  never been run on hardware).
+- **Camera Sensor (IMX add-on) → Support IMX708**, or **Support IMX219** for a
+  Camera Module v2. Both work; they are separate options so a build carries only
+  the register tables it uses.
 - In the `esp_video` config, enable the MIPI-CSI video device and the ISP video
   device, and configure the CSI controller for **2 data lanes**.
 - For IMX708 autofocus, enable **Camera Motor (IMX add-on) → DW9807**, plus

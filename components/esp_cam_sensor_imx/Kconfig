@@ -6,10 +6,12 @@ menu "Camera Sensor (IMX add-on)"
         help
             Enable the Sony IMX219 MIPI-CSI driver.
 
-            Off by default: this driver has been written but has never been run
-            on hardware. Its register timing, MIPI lane rate and ISP tuning all
-            still need bench confirmation, so it is opt-in until someone
-            confirms a working stream. The IMX708 below is the tested one.
+            Verified on hardware as of 0.2.0: streaming, auto-exposure through
+            esp_video's 3A loop, stills and H.264 video.
+
+            Still off by default only because a build should not carry two
+            sensors' register tables when it uses one. Turn it on for an IMX219
+            and turn CAMERA_IMX708 off.
 
     if CAMERA_IMX219
 

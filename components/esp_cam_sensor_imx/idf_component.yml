@@ -1,10 +1,11 @@
-version: "0.1.2"
+version: "0.2.0"
 description: >-
   Sony IMX-series MIPI-CSI camera sensor drivers for the ESP32-P4
   esp_cam_sensor / esp_video framework, plus the DW9807 autofocus VCM. Brings
   the Raspberry Pi Camera Module 3 (IMX708) to the ESP32-P4: streaming, ISP
-  tuning and autofocus. An IMX219 (Camera Module v2) driver is included but has
-  not yet been run on hardware.
+  tuning and autofocus. Also drives the Raspberry Pi Camera Module v2 / NoIR v2
+  (IMX219): streaming, ISP tuning, stills and H.264 video, verified on hardware.
+  The v2 module is fixed-focus, so no autofocus there.
 url: https://github.com/mushBrainDave/esp32-p4-imx-camera/tree/main/components/esp_cam_sensor_imx
 repository: https://github.com/mushBrainDave/esp32-p4-imx-camera.git
 issues: https://github.com/mushBrainDave/esp32-p4-imx-camera/issues
@@ -45,9 +46,15 @@ files:
     # who has filled in their SSID and password would publish them to a public
     # registry. The .example template beside it is what ships.
     - "examples/**/wifi_credentials.h"
-    # Frames and clips written by the examples while running on the bench.
+    # Frames and clips written by the examples while running on the bench. The
+    # comment above about the working tree applies here too, and a recorded clip
+    # is megabytes: tools/capture.py defaults to --out capture, the snapshot
+    # examples are usually run with shot, and the video ones with clip. The
+    # glob covers clip2, clip3 and so on, which is what a second run tends to
+    # be called.
     - "examples/**/capture/**/*"
     - "examples/**/shot/**/*"
+    - "examples/**/clip*/**/*"
     # `compote component pack` resolves --dest-dir relative to --project-dir,
     # so running it without an absolute path leaves the archive here. Keep a
     # previous archive out of the next one.

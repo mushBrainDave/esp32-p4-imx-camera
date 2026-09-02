@@ -4,6 +4,84 @@ All notable changes to `esp_cam_sensor_imx` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-01
+
+The IMX219 (Raspberry Pi Camera Module v2 / NoIR v2) goes from written-but-never-run
+to verified on hardware: streaming, auto-exposure, stills and H.264 video.
+
+### Upgrading
+
+- **Run `idf.py reconfigure` in any existing build tree.** This release adds the
+  Kconfig option `CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT`, and a `sdkconfig`
+  that predates it will not have the symbol. The driver carries an `#ifndef`
+  fallback so a stale tree keeps its previous behaviour rather than failing to
+  build, but reconfiguring is what actually picks the option up.
+- **A caret range on `^0.1.x` does not reach this release.** Projects pinned that
+  way stay on the 0.1 line; move them to `^0.2.0`.
+
+### Added
+
+- **IMX219 ISP tuning config**, `sensors/imx219/cfg/imx219_default.json` — AE,
+  AWB, denoise, gamma, sharpening and metering weights. Without it esp_video
+  logs only `failed to get configuration to initialize ISP controller` and runs
+  with no auto-exposure and no white balance.
+- **`imx219_snapshot` example** — one still, hardware-JPEG encoded, sent down the
+  console UART. No autofocus (the v2 module is fixed-focus and has no VCM on the
+  bus), with an auto-exposure convergence trace in its place.
+- **`imx219_video` example** — ~8 s of H.264 buffered in PSRAM and shipped down
+  the console. Measured **1632×1232 at 28.1 fps**, 225 frames, no encoder
+  failures. The encoder is the limit, not the sensor: 35.3 ms mean encode
+  against a 33.3 ms frame interval.
+- **1632×1232 sensor mode** (index 2), the 1640-wide binned mode with 8 columns
+  trimmed at the sensor's readout window so the width is a whole number of
+  16-pixel H.264 macroblocks. Same VTS, so identical frame rate and exposure
+  limits; the X start is a multiple of 4, so 2×2 binning keeps the RGGB phase.
+- **`CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT`** to choose the start-up mode.
+  Defaults to 0, the existing 1640×1232.
+
+### Fixed
+
+- **IMX219 gain is now an enumeration**, as esp_video requires. It drives AE gain
+  as a menu control — `VIDIOC_QUERYMENU`, binary search, set the index — and
+  `esp_video_cam_query_menu()` rejects anything that is not
+  `ESP_CAM_SENSOR_PARAM_TYPE_ENUMERATION`. Declared as a plain number, AE
+  silently drove exposure only, which looks like a dark, grainy picture rather
+  than like an error. The table spans the sensor's real 1.0×–10.667× at roughly
+  1/12 stop. `GROUP_EXP_GAIN` and `get_para_value` are implemented too.
+- **IMX219 exposure is clamped to the mode's frame length**, not to the 16-bit
+  register width. Integration time cannot exceed VTS, and VTS is per-mode here
+  (1763 binned, 3526 full), so a fixed constant cannot express it. The
+  descriptor reports the same ceiling, which matters: esp_video range-checks
+  `S_EXT_CTRLS` against `qdesc.number.maximum`, so an honest descriptor turns an
+  over-range AE request into a clean rejection instead of a write the sensor
+  ignores.
+- **`isp_info.gain_def` said 0 while `set_format` wrote code 100.** Both now name
+  `IMX219_ANA_GAIN_DEFAULT` (104, the table entry nearest the old hardcoded
+  value), so the register and the driver's state agree. The picture is unchanged.
+- **`examples/imx219_capture`'s README** no longer tells you to look for a
+  changing `seq`. esp_video never fills `v4l2_buffer.sequence` at
+  `VIDIOC_DQBUF`, so it reads 0 however well the sensor is streaming, and the
+  old criterion would have you read a healthy stream as a failure.
+
+### Known limitations
+
+- **The IMX219 colour matrix is the identity matrix — not calibrated.** The
+  IMX708's tuned matrix is deliberately not reused: a CCM is a per-sensor,
+  per-CFA measurement, and a borrowed one would look like tuning while being an
+  unmeasured guess. Colour is flat until it is measured against a chart, and the
+  NoIR variant has no IR-cut filter, so infrared contaminates all three channels.
+- **The IMX219 runs out of light sooner than the IMX708.** Its gain ceiling is
+  10.667× against 16×, and with `ac_freq: 60` the anti-flicker step of 440.8
+  lines puts the fourth step (1763) above the 1759-line exposure ceiling, so it
+  can never be taken. In a dim room AE pins at 1322 lines with gain maxed.
+- The IMX219's 3280×2464 mode is still unusable: it is wider than the ESP32-P4's
+  ~1920 px datapath limit and produces duplicated columns.
+- **The ESP32-P4's ISP crop needs chip revision v3.0.** esp_video gates
+  `ESP_VIDEO_ISP_DEVICE_CROP` on `CONFIG_ESP32P4_REV_MIN_FULL >= 300`, so on
+  earlier silicon `VIDIOC_S_SELECTION` returns `ESP_ERR_NOT_SUPPORTED`. This is
+  why the 16-alignment above is done at the sensor rather than in the ISP.
+- PDAF is not driven.
+
 ## [0.1.2] - 2026-08-30
 
 ### Added
