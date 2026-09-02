@@ -24,8 +24,18 @@ idf.py build flash monitor
 | -------- | ----- |
 | `esp_video_init OK` | CSI + ISP + I2C came up; SCCB pins/power are right |
 | `driver=... card=...` | the capture video device exists |
-| `frame NN: seq=… bytes=… avg=…` with changing `seq` and non-zero `bytes` | **the IMX219 is actually streaming** |
+| `frame NN: seq=… bytes=… avg=…` with non-zero `bytes` arriving at the mode's frame interval | **the IMX219 is actually streaming** |
 | `==== IMX219 bring-up PASSED ====` | full path works |
+
+**Ignore `seq`.** esp_video never fills `v4l2_buffer.sequence` at `VIDIOC_DQBUF`
+- it keeps its own sequence internally and does not copy it out - so `seq` reads
+0 on every frame no matter how well the sensor is streaming. Judge liveness from
+`bytes` and from the interval between frames instead: at 1640x1232 RGB565 expect
+`bytes=4040960` about every 33 ms.
+
+`W esp_video_init: failed to get configuration to initialize ISP controller` is
+expected here and is not a failure: this example registers no esp_ipa JSON, so
+there is no AE or AWB and exposure/gain stay at the mode defaults.
 
 ## If it fails
 
