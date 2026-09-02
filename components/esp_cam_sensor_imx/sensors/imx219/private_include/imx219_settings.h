@@ -105,6 +105,38 @@ static const imx219_reginfo_t imx219_mode_1640x1232_regs[] = {
 };
 
 /*
+ * Mode: 1632x1232, 2x2 binned, RAW10, ~30fps. The 1640 mode above with 8
+ * columns trimmed - 4 from each side - so the output width is a whole number of
+ * 16-pixel H.264 macroblocks (1632 = 102 x 16; 1640 is 102.5).
+ *
+ * The crop is done here, at the sensor's readout window, rather than downstream
+ * for two reasons. The ESP32-P4's ISP crop is only present from chip revision
+ * v3.0 (esp_video gates ESP_VIDEO_ISP_DEVICE_CROP on CONFIG_ESP32P4_REV_MIN_FULL
+ * >= 300), so on earlier silicon VIDIOC_S_SELECTION returns ESP_ERR_NOT_SUPPORTED.
+ * And trimming width in the encoder is not an option at all: the H.264 core
+ * takes its line stride from the width it was given, so a narrower width over a
+ * wider buffer shears the picture diagonally. Cropping at readout is the only
+ * place the stride actually changes.
+ *
+ * X window 8..3271 is 3264 pixels, which halves to 1632. The start is a
+ * multiple of 4, so 2x2 binning lands on the same CFA phase as the full-width
+ * mode and the Bayer order stays RGGB - an odd offset would swap red and blue.
+ * VTS is unchanged at 0x06e3, so exposure limits and frame rate match the
+ * 1640 mode exactly.
+ */
+static const imx219_reginfo_t imx219_mode_1632x1232_regs[] = {
+    {IMX219_REG_X_ADD_STA_H, 0x00}, {IMX219_REG_X_ADD_STA_L, 0x08},   /* 8    */
+    {IMX219_REG_X_ADD_END_H, 0x0c}, {IMX219_REG_X_ADD_END_L, 0xc7},   /* 3271 */
+    {IMX219_REG_Y_ADD_STA_H, 0x00}, {IMX219_REG_Y_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_Y_ADD_END_H, 0x09}, {IMX219_REG_Y_ADD_END_L, 0x9f},   /* 2463 */
+    {IMX219_REG_X_OUTPUT_SIZE_H, 0x06}, {IMX219_REG_X_OUTPUT_SIZE_L, 0x60}, /* 1632 */
+    {IMX219_REG_Y_OUTPUT_SIZE_H, 0x04}, {IMX219_REG_Y_OUTPUT_SIZE_L, 0xd0}, /* 1232 */
+    {IMX219_REG_BINNING_MODE_H, 0x01}, {IMX219_REG_BINNING_MODE_L, 0x01},   /* 2x2 normal */
+    {IMX219_REG_VTS_H, 0x06}, {IMX219_REG_VTS_L, 0xe3},               /* 1763 */
+    {IMX219_REG_END, 0x00},
+};
+
+/*
  * Mode: 3280x2464, full resolution, RAW10, ~15fps. VTS = 0x0dc6.
  * High bandwidth — bring this up only after the binned mode streams cleanly.
  */

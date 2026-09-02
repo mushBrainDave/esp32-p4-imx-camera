@@ -46,6 +46,10 @@ static const char *TAG = "imx219";
 enum {
     IMX219_FMT_1640x1232_RAW10_30FPS = 0,
     IMX219_FMT_3280x2464_RAW10_15FPS,
+    /* Appended, not inserted: the indices above are what
+       CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT selects between, so renumbering
+       them would silently change the mode of an existing build. */
+    IMX219_FMT_1632x1232_RAW10_30FPS,
 };
 
 static const esp_cam_sensor_isp_info_t imx219_isp_info[] = {
@@ -67,6 +71,20 @@ static const esp_cam_sensor_isp_info_t imx219_isp_info[] = {
             .pclk = IMX219_PIXEL_RATE_2LANE,
             .hts = IMX219_HTS,
             .vts = 3526,                        /* 0x0dc6 */
+            .exp_def = IMX219_EXPOSURE_DEFAULT,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX219_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX219_FMT_1632x1232_RAW10_30FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX219_PIXEL_RATE_2LANE,
+            .hts = IMX219_HTS,
+            /* Same VTS as the 1640 mode - only the readout width changed, so
+               frame rate and every exposure limit are identical. */
+            .vts = 1763,                        /* 0x06e3 */
             .exp_def = IMX219_EXPOSURE_DEFAULT,
             .gain_def = IMX219_ANA_GAIN_DEFAULT,
             .tline_ns = IMX219_TLINE_NS,
@@ -112,9 +130,50 @@ static const esp_cam_sensor_format_t imx219_format_info[] = {
         },
         .reserved = NULL,
     },
+    [IMX219_FMT_1632x1232_RAW10_30FPS] = {
+        .name = "MIPI_2lane_24Minput_RAW10_1632x1232_30fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX219_XCLK_FREQ_HZ,
+        .width = 1632,
+        .height = 1232,
+        .regs = imx219_mode_1632x1232_regs,
+        .regs_size = ARRAY_SIZE(imx219_mode_1632x1232_regs),
+        .fps = 30,
+        .isp_info = &imx219_isp_info[IMX219_FMT_1632x1232_RAW10_30FPS],
+        .mipi_info = {
+            .mipi_clk = IMX219_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX219_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
 };
 
-#define IMX219_DEFAULT_FORMAT_INDEX IMX219_FMT_1640x1232_RAW10_30FPS
+/*
+ * Which mode the sensor comes up in.
+ *
+ * Index 2 (1632x1232) exists because H.264 codes in 16x16 macroblocks and 1640
+ * is 102.5 of them. Video builds want it; everything else is better off with
+ * the full 1640-wide field of view, so the default stays index 0 and the video
+ * example selects index 2 in its sdkconfig.defaults.
+ */
+/*
+ * Fall back to mode 0 if the Kconfig symbol is absent. It will be, in any build
+ * tree whose sdkconfig predates this option and has not been reconfigured -
+ * and without this the failure is "CONFIG_..._INDEX_DEFAULT undeclared" from
+ * inside the driver, which points at the wrong thing entirely. This way a stale
+ * tree quietly keeps the behaviour it already had.
+ */
+#ifndef CONFIG_CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT
+#define CONFIG_CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT 0
+#endif
+
+#define IMX219_DEFAULT_FORMAT_INDEX CONFIG_CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT
+
+#if IMX219_DEFAULT_FORMAT_INDEX >= 3
+#error "CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT is out of range - see the mode table above"
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Gain table                                                          */
