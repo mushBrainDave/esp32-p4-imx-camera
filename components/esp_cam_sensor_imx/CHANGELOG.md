@@ -76,10 +76,13 @@ to verified on hardware: streaming, auto-exposure, stills and H.264 video.
   can never be taken. In a dim room AE pins at 1322 lines with gain maxed.
 - The IMX219's 3280×2464 mode is still unusable: it is wider than the ESP32-P4's
   ~1920 px datapath limit and produces duplicated columns.
-- **The ESP32-P4's ISP crop needs chip revision v3.0.** esp_video gates
-  `ESP_VIDEO_ISP_DEVICE_CROP` on `CONFIG_ESP32P4_REV_MIN_FULL >= 300`, so on
-  earlier silicon `VIDIOC_S_SELECTION` returns `ESP_ERR_NOT_SUPPORTED`. This is
-  why the 16-alignment above is done at the sensor rather than in the ISP.
+- **The ISP crop is unavailable on ESP-IDF v5.4.0**, which is why the
+  16-alignment above is done at the sensor's readout window rather than in the
+  ISP. `csi_set_selection` and its ops-table entry both sit behind
+  `ESP_VIDEO_ISP_DEVICE_CROP`, which esp_video defines only under
+  `CONFIG_SOC_ISP_CROP_SUPPORTED` — a symbol this IDF version does not define at
+  all, on any P4 revision. So `ops->set_selection` is NULL and
+  `VIDIOC_S_SELECTION` returns `ESP_ERR_NOT_SUPPORTED`.
 - PDAF is not driven.
 
 ## [0.1.2] - 2026-08-30
