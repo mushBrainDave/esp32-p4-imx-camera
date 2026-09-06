@@ -671,51 +671,160 @@ readout, so they share timing and exposure — a smaller one costs field of view
 | 3 | 800×600 | 4:3 |
 | 4 | 640×480 | 4:3, tightest |
 
-Set the mode, then capture. PowerShell, from the repo root — the `WriteAllLines`
-is deliberate, `Set-Content -Encoding utf8` on 5.1 writes a BOM that kconfgen
-then complains about:
+There are two places a mode can be chosen, and **the code wins**. Get this
+order right or the rest of the section will not work:
+
+1. `CAPTURE_MODE_INDEX` in `imx708_snapshot_main.c` (`VIDEO_MODE_INDEX` in
+   `imx708_video_main.c`). `0..4` picks that mode; `-1`, which is what both
+   examples ship, means "leave it alone".
+2. `CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT` in `sdkconfig`, which
+   decides only what the sensor *comes up in*.
+
+So editing `sdkconfig` does nothing while the define is `0..4`: the sensor boots
+into the Kconfig mode and the app immediately switches it back, with only a
+second `set format` line in the log to say so. Check the define is `-1` before
+concluding the Kconfig knob is broken.
+
+**Why changing resolution always costs a flash.** The mode index is a
+compile-time constant either way. `sdkconfig` is read by kconfgen during the
+build into `build/config/sdkconfig.h` as
+`#define CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`, and the driver uses
+that macro when esp_video probes the sensor at start-up - it is what
+`dev->cur_format` is set to at detect, and the fallback `set_format` takes when
+handed no format. `CAPTURE_MODE_INDEX` is a `#define` in the app. Neither is reachable from
+outside the binary, so editing a file and re-running `capture.py` without
+`--flash` leaves the old constant running on the board - and the board will
+happily produce a perfectly good image at the previous resolution, which is
+what makes this mistake so quiet.
+
+Nothing about the *sensor* requires that. `imx708_format_by_index()` plus
+`VIDIOC_S_SENSOR_FMT` is an ordinary runtime call, and the flash is only the
+price of the index coming from a `#define` rather than from something read at
+run time. `MODE_CONSOLE` below takes it from a keystroke instead and needs
+neither: not a rebuild, not a reflash, not a reboot.
+
+What is a real constraint, rather than a missing feature, is *when* the switch
+may happen - see the `VIDIOC_STREAMON` note below. Changing resolution while
+the board runs therefore means cycling the whole video stack rather than
+issuing another ioctl, which is what `MODE_CYCLE` and `MODE_CONSOLE` do.
+
+The code path, which is also the path an application would use to pick a mode
+from a serial command, NVS or a button:
+
+```bash
+sed -i 's/^#define CAPTURE_MODE_INDEX  .*$/#define CAPTURE_MODE_INDEX  (2)/' components/esp_cam_sensor_imx/examples/imx708_snapshot/main/imx708_snapshot_main.c
+```
+
+The Kconfig path, for when the define is `-1`. PowerShell, from the repo root —
+the `WriteAllLines` is deliberate, `Set-Content -Encoding utf8` on 5.1 writes a
+BOM that kconfgen then complains about:
 
 ```powershell
 $sd = "components\esp_cam_sensor_imx\examples\imx708_snapshot\sdkconfig"; [IO.File]::WriteAllLines((Resolve-Path $sd), ((Get-Content $sd) -replace '^CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT=.*$','CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT=2'))
 ```
 
-Then a still at that mode:
+`idf.py menuconfig` is the alternative to editing `sdkconfig`: `Component
+config` → `Camera Sensor (IMX add-on)` → **Default MIPI-CSI mode index**.
+
+Either way it is a rebuild. Then a still at that mode — **`--flash` is what
+builds and flashes; without it `capture.py` only listens, and the board happily
+re-runs the firmware it already has**:
 
 ```bash
 python tools/capture.py --flash --out mode2_1024x768
 ```
 
-Or a clip — same idea, pointing the edit at the video example's `sdkconfig`:
+Or a clip — same idea, against the video example:
 
 ```bash
 python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_video --out clip_mode2
 ```
 
-Neither example needs a code change to follow the mode. Both take their
+Neither example needs a code change to *follow* the mode. Both take their
 geometry from `VIDIOC_G_FMT`, and the video example derives its encoder height
 from whatever it is handed.
 
-**Confirm the mode actually took**, because an out-of-range index is silently
-clamped to 0 rather than rejected:
+**Confirm the mode actually took.** Two checks, and the first one is the one
+people skip:
 
 ```bash
-grep -a "set format" mode2_1024x768/log.txt
+grep -a "ELF file SHA256\|Compile time\|set format" mode2_1024x768/log.txt
 ```
 
-`idf.py menuconfig` is the alternative to editing `sdkconfig`: `Component
-config` → `Camera Sensor (IMX add-on)` → **Default MIPI-CSI mode index**.
+The same SHA and compile time as the previous run means the firmware never
+changed — the edit did not reach the build, or `--flash` was left off — and the
+resolution in the image is the *old* mode's, not evidence about the new one.
+Only once the SHA has moved does the `set format` line mean anything. It prints
+twice: the mode the sensor booted into, then the one the app switched it to.
 
-**Both examples can also switch mode without touching `sdkconfig`** — set
-`CAPTURE_MODE_INDEX` in `imx708_snapshot_main.c` or `VIDEO_MODE_INDEX` in
-`imx708_video_main.c` to `0..4` instead of `-1`. Still a rebuild, but it keeps
-the Kconfig alone, and it is the path an application would use to pick a mode
-from something it reads at start-up.
+Neither index can be out of range unnoticed. A bad Kconfig value fails the
+build on a `_Static_assert` in the driver; a bad `CAPTURE_MODE_INDEX` makes
+`imx708_format_by_index()` return `NULL`, and the app logs `out of range` and
+stays in the built-in mode.
 
 It has to happen **before the first `VIDIOC_STREAMON`**: the ISP/IPA pipeline is
 built once by `esp_video_init()`, and a mode change after streaming has started
 moves the geometry but strands AE, AWB and autofocus — the frame comes back the
-right size and nearly black. That is why there is no "capture every mode in one
-run" sweep here.
+right size and nearly black.
+
+**Capturing every mode in one run.** Set `MODE_CYCLE` to `1` in
+`imx708_snapshot_main.c` and the example walks the whole mode table off one
+boot, sending five separately-named frames:
+
+```bash
+python tools/capture.py --flash --seconds 200 --out mode_cycle
+```
+
+It gets around the constraint above by cycling the stack per mode -
+`close()`, `esp_video_deinit()`, `esp_video_init()`, reopen, select, capture -
+so each mode gets a pipeline built for its own geometry.
+`esp_video_isp_pipeline_init()` is not public, but deinit/init reaches the same
+thing from further out.
+
+Measured 2026-09-06: five modes in 36 s, every CRC good, free heap and free
+PSRAM byte-identical after all five cycles, the DW9807 re-detected and the lens
+re-parked each time, and AF converging to 646/641/641/641/636 across five
+independent searches. Nothing leaks and nothing is stranded.
+
+This is the only way to compare modes honestly. Two runs differ by scene,
+exposure and lens position as much as by geometry — see the note on
+cross-scene comparisons — where five frames off one boot and one tripod differ
+only in the crop.
+
+**Picking modes by hand, while it runs.** `MODE_CONSOLE` (on by default in
+`imx708_snapshot_main.c`) puts a prompt on the console: press `0`-`4` for a
+mode, `q` to finish. No Enter - one keystroke is one command. This is the same
+stack cycle as `MODE_CYCLE`, driven by input instead of a loop counter, and it
+is the demonstration that resolution is an application's choice at run time
+rather than something baked in at build time.
+
+Drive it by hand, with the board echoing to your terminal:
+
+```bash
+python tools/capture.py --seconds 300 --interactive --out manual
+```
+
+Or script it, one keystroke per prompt:
+
+```bash
+python tools/capture.py --flash --seconds 150 --keys "4,2,0,q" --out console_test
+```
+
+`--keys` waits for the `MODESEL> ` prompt rather than guessing delays, so it
+stays in step with a board that needs ~7 s per capture and never sends into the
+middle of a payload. `--interactive` echoes the console live and steps over the
+binary payloads by length, so the images still extract cleanly while you watch
+the log.
+
+**This found a real bug the first time it was used.** Capturing 640x480 and
+then 1024x768 - small then large, which no previous run had ever done - panicked
+the board with an instruction fetch from `0x29282928`, an address made of image
+bytes. `stage_frame()` allocated its PSRAM staging buffer once, at the first
+frame's size, which was safe only while every run went largest-first;
+`MODE_CYCLE` walks the table downwards, so it never hit it. The overrun was
+958464 bytes. Fixed by growing the buffer, and worth remembering as a shape:
+**a reused buffer sized by its first caller is a bug waiting for the order to
+change.**
 
 ### What each mode measures
 

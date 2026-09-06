@@ -31,10 +31,10 @@ idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx:imx708_capt
 ```
 
 The version is optional and defaults to the newest published. Pin it with
-`mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture` if you want a specific
-line — a caret range on `0.x` covers that whole minor series, so `^0.2.0` picks
+`mushbraindave/esp_cam_sensor_imx^0.3.0:imx708_capture` if you want a specific
+line — a caret range on `0.x` covers that whole minor series, so `^0.3.0` picks
 up 0.2.1 and later but stops at 0.3.0. Note what that means going the other
-way: a project still pinned to `^0.1.1` will *not* pick up 0.2.0.
+way: a project still pinned to `^0.2.0` will *not* pick up 0.3.0.
 
 The other example names are `imx708_snapshot`, `imx708_video`,
 `imx708_wifi_snapshot`, `imx708_wifi_video`, and — for a Camera Module v2 —

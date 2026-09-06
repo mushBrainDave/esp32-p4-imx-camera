@@ -16,10 +16,33 @@ change to follow: all five have been captured on hardware and CRC-checked.
 
 `CAPTURE_MODE_INDEX` in `main/imx708_snapshot_main.c` selects the mode through
 the driver API instead — `imx708_format_by_index()` and `VIDIOC_S_SENSOR_FMT`,
-with `-1` keeping the build-time mode and `0..4` picking one. It is a `#define`,
-so it still needs a rebuild and flash; what it shows is the call an application
-would make. The call has to run before the first `VIDIOC_STREAMON` — see that
-define's comment for why a later switch strands auto-exposure and autofocus.
+with `-1` (the default) keeping the build-time mode and `0..4` picking one. It
+is a `#define`, so it still needs a rebuild and flash; what it shows is the call
+an application would make. The call has to run before the first
+`VIDIOC_STREAMON` — see that define's comment for why a later switch strands
+auto-exposure and autofocus.
+
+Two switches next to it drive that same call at run time, by cycling the video
+stack per mode so each one gets a pipeline built for its own geometry:
+
+- **`MODE_CONSOLE`** (default on) puts a `MODESEL> ` prompt on the console.
+  Press `0`–`4` to capture that mode, `q` to finish — no Enter, no rebuild, no
+  reboot. This is the demonstration that resolution is an application's choice
+  at run time; the `#define`s above exist only because nothing else fed the
+  index in.
+- **`MODE_CYCLE`** walks the whole mode table off one boot, largest to
+  smallest. Five frames of one scene at one lens position is the only honest
+  way to compare modes — separate runs differ by exposure and framing as much
+  as by geometry.
+
+```bash
+python tools/capture.py --seconds 300 --interactive --out manual      # type the modes
+python tools/capture.py --flash --seconds 150 --keys "4,2,0,q" --out console_test
+```
+
+`--interactive` forwards your keystrokes and echoes the board back, stepping
+over the binary payloads so images still extract while you watch the log;
+`--keys` does the same from a script, one keystroke per prompt.
 
 **Copy-pasteable commands for each mode** are in
 [`docs/cli-cookbook.md`](../../../../docs/cli-cookbook.md#resolution-modes),

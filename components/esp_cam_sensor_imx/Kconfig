@@ -69,7 +69,7 @@ menu "Camera Sensor (IMX add-on)"
             help
                 Which entry of the driver's mode table the sensor comes up in.
 
-                All three are the same 2x2-binned RAW10 readout at 28 fps and
+                All five are the same 2x2-binned RAW10 readout at 28 fps and
                 differ only in how much of it is digitally cropped away, so a
                 smaller mode buys CSI bandwidth, PSRAM and encode time, and
                 pays in field of view. It does not make the sensor faster -

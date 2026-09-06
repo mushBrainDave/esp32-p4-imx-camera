@@ -4,7 +4,7 @@ All notable changes to `esp_cam_sensor_imx` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-09-06
 
 ### Added
 
@@ -89,6 +89,28 @@ follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
   scaler reports 16 and so does this one. Only a write-and-restore separates
   "implemented" from "present but hardwired".
 
+- **Resolution can now be changed on a running board**, in `imx708_snapshot`:
+  `MODE_CONSOLE` (default on) prints a `MODESEL> ` prompt and captures whichever
+  mode you type — `0`–`4`, `q` to finish, one keystroke per command — and
+  `MODE_CYCLE` walks the whole table off a single boot.
+
+  Both work by cycling the video stack around the switch: `close()` →
+  `esp_video_deinit()` → `esp_video_init()` → reopen → select → capture. That
+  puts the switch back into the legal window before the first `VIDIOC_STREAMON`,
+  so each mode gets an ISP/IPA pipeline built for its own geometry instead of
+  inheriting the previous one's. `esp_video_isp_pipeline_init()` being private
+  does not matter; deinit/init reaches it from further out. No reboot, and the
+  cycle itself costs ~120 ms — what takes the time is 3A re-converging.
+
+  Measured: five modes back to back off one boot, every CRC good, free heap and
+  free PSRAM byte-identical after all five cycles, the DW9807 re-detected and
+  autofocus re-converging to 646/641/641/641/636 across five independent
+  searches.
+
+  `tools/capture.py` drives it with `--interactive` (forwards your keystrokes,
+  echoes the board, steps over binary payloads so images still extract) or
+  `--keys "4,2,0,q"` (scripted, one keystroke per prompt).
+
 - **Both IMX708 examples now select their mode through the driver API**, not
   only through Kconfig: `CAPTURE_MODE_INDEX` in `imx708_snapshot` and
   `VIDEO_MODE_INDEX` in `imx708_video`, `-1` by default (keep the build-time
@@ -96,10 +118,8 @@ follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `imx708_format_by_index()` and `VIDIOC_S_SENSOR_FMT`.
 
   These are `#define`s, so changing one still means a rebuild and a flash —
-  they are a worked example of the call rather than a way to change resolution
-  on a running board. Neither example reads its index from anything. The API
-  itself is genuinely run-time; an application that took the index from a
-  serial command or NVS could switch without being rebuilt.
+  they are a worked example of the call. For changing resolution on a running
+  board, see `MODE_CONSOLE` below.
 
   **The switch must happen before the first `VIDIOC_STREAMON`.** Beyond the
   obvious — buffers are sized for the format in force when they were requested
@@ -108,15 +128,23 @@ follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
   *after* streaming has begun moves the geometry and strands 3A: auto-exposure,
   auto-white-balance and autofocus all stop, and the frame comes back correctly
   sized, correctly formed and nearly black with the `esp_ipa_af` log lines
-  absent. That killed a planned "capture every mode in one run" sweep, which
-  produced one good frame and four dark ones; the sweep was dropped rather than
-  shipped and the limitation is written up in the component README.
+  absent. That killed the naive form of a "capture every mode in one run"
+  sweep, which produced one good frame and four dark ones. Cycling the video
+  stack per mode is the form that works — see `MODE_CYCLE` below.
 
   Verified: `imx708_snapshot` built for mode 0 and switched to 800×600 gives a
   correctly exposed, in-focus frame (`bytesused=960000`, autofocus 512 → 641);
   `imx708_video` switched to 1024×768 records 224 frames, 0 failed, 28.0 fps.
 
 ### Fixed
+
+- **`imx708_snapshot` overran its staging buffer when a run raised its
+  resolution.** `stage_frame()` allocated the PSRAM staging copy once, at the
+  first frame's size, then `memcpy`'d later frames into it. Harmless while a run
+  captured a single size or descended through the table; capturing 640×480 and
+  then 1024×768 overran it by 958464 bytes and panicked the board with an
+  instruction fetch from `0x29282928` — an address made of image bytes. The
+  buffer now grows when a larger frame arrives.
 
 - **`imx708.h` could not be included by an application.** It pulled in
   `imx708_regs.h`, which lives in `private_include/` and is therefore invisible
@@ -152,6 +180,10 @@ follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
   out, and renumbering later would silently change what an existing build comes
   up in, with nothing to warn whoever wrote that number down. From here modes
   are appended, and the ordering is abandoned before the numbering is.
+
+- **Move dependency pins from `^0.2.0` to `^0.3.0`.** A caret range on `0.x`
+  covers one minor line only, so a project left on `^0.2.0` silently keeps
+  resolving the old version rather than failing.
 
 - **Run `idf.py reconfigure` in any existing build tree** to pick up
   `CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`. As with the IMX219 option, the

@@ -156,21 +156,29 @@ rather than tidiness. Two reasons:
 
 - Buffers are sized for the format in force when they were requested, so a
   mode change under allocated buffers is wrong by construction.
-- **3A does not survive a later switch.** The ISP/IPA pipeline is created once,
-  by `esp_video_init()`, and reads the sensor geometry then. Nothing
-  re-initialises it afterwards — `esp_video_isp_pipeline_init()` is not in a
-  public header — so a mode change after streaming has begun moves the geometry
-  and leaves auto-exposure, auto-white-balance and autofocus behind. Measured:
-  the frame is the right size and correctly formed, and nearly black, with the
-  `esp_ipa_af` log lines simply absent from that point on.
+- **3A does not survive a later switch.** The ISP/IPA pipeline belongs to
+  `esp_video_init()`, and nothing re-binds it to a new geometry while it runs —
+  `esp_video_isp_pipeline_init()` is not in a public header — so a mode change
+  after streaming has begun moves the geometry and leaves auto-exposure,
+  auto-white-balance and autofocus behind. Measured: the frame is the right
+  size and correctly formed, and nearly black, with the `esp_ipa_af` log lines
+  simply absent from that point on.
 
-So one switch, before streaming. Changing resolution mid-run means reflashing,
-until esp_video exposes a pipeline re-init — and as of **2.4.1**, the newest
-release, it does not. Upstream `master` does not either: its public
-`esp_video_isp_pipeline.h` declares no init, deinit or restart entry point, and
-`esp_video_isp_pipeline_init()` stays in `private_include/`. Restarting the
-whole video stack is not a workaround, because `esp_video_init()` re-runs
-sensor detect and comes back at the Kconfig default.
+So: one switch per pipeline, before streaming.
+
+**To change resolution again without rebooting, cycle the stack around the
+switch.** `close()` → `esp_video_deinit()` → `esp_video_init()` → reopen →
+select → capture puts you back in front of the first `STREAMON`, where the
+switch is the ordinary legal one and 3A is rebuilt with it.
+`esp_video_isp_pipeline_init()` being private does not matter; deinit/init
+reaches it from further out. Sensor detect does reset the mode to the Kconfig
+default on the way through, which is irrelevant — you select afterwards.
+
+Measured on hardware: five modes captured back to back off one boot, every CRC
+good, free heap and free PSRAM **byte-identical** after all five cycles, the
+VCM re-detected and autofocus re-converging each time (646/641/641/641/636
+across five independent searches). The cost is ~120 ms for the cycle itself,
+plus however long 3A needs to settle afterwards.
 
 Verified on hardware, both examples: firmware built for mode 0, switched at
 start-up, with 3A working. `imx708_snapshot` at 800×600 gives a correctly
@@ -179,11 +187,12 @@ exposed, in-focus frame (`bytesused=960000`, autofocus 512 → 641);
 
 Both examples exercise this path — `CAPTURE_MODE_INDEX` in
 `imx708_snapshot_main.c`, `VIDEO_MODE_INDEX` in `imx708_video_main.c`, `-1` by
-default to keep the build-time mode. Being `#define`s they still need a
-rebuild, so as a way of *changing* resolution they buy nothing over the Kconfig
-option; what they are is a worked example of the call, in code that runs on the
-board. Neither example reads the index from anything, so **no example can
-change mode without a reflash**.
+default to keep the build-time mode. `imx708_snapshot` also carries two worked
+examples of driving it at run time: `MODE_CYCLE` walks the whole table off one
+boot, and `MODE_CONSOLE` (default on) takes a digit typed at the console and
+captures that mode — no rebuild, no reboot, no reflash. The index has to come
+from *somewhere*; a `#define` is the simplest source, and a keystroke, an NVS
+entry or an HTTP parameter are the same call with a different one.
 
 The index is the unambiguous selector; look-up by size returns the first match.
 The IMX219 driver has no equivalent yet, and is build-time only.
@@ -208,13 +217,13 @@ log is `detected IMX708, PID=0x0708`.
 ## Install
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.2.0"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.3.0"
 ```
 
 Or start from a working example, which brings its own `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.3.0:imx708_capture"
 ```
 
 Then in `menuconfig`:

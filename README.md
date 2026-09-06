@@ -42,7 +42,9 @@ longer exposure, but it does recover frames the pipeline drops at full size:
 `imx708_video` measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode. Nothing is scaled, because the
 sensor cannot: its scaling block is read-only, so a smaller mode is a narrower
 window rather than the whole scene shrunk. Pick one with
-`CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`.
+`CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`, or at run time: `imx708_snapshot`
+takes a mode digit typed at its console and re-cycles the video stack around
+the switch, so resolution can change without a rebuild, a reflash or a reboot.
 
 **Autofocus** is implemented for the IMX708's DW9807 VCM
 (`components/esp_cam_sensor_imx/motors/dw9807`, I2C `0x0c`), driven by
@@ -72,14 +74,14 @@ The driver is published to the ESP Component Registry as
 [`mushbraindave/esp_cam_sensor_imx`](https://components.espressif.com/components/mushbraindave/esp_cam_sensor_imx):
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.2.0"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.3.0"
 ```
 
 Or start from one of the seven examples it ships with, which bring their own
 `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.3.0:imx708_capture"
 ```
 
 The component's own [README](components/esp_cam_sensor_imx/README.md) is the
