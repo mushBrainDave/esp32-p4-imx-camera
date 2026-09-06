@@ -17,8 +17,185 @@ that gap.
 | Sensor | Mode | Format | FPS | Notes |
 | ------ | ---- | ------ | --- | ----- |
 | IMX708 | 1920×1080 | RAW10 | 28 | 2×2 binned, digitally cropped — the mode the examples use |
+| IMX708 | 1280×720 | RAW10 | 28 | The same readout cropped harder — 44% of the pixels, 56% of the FOV each way. 16-aligned both axes |
+| IMX708 | 1024×768 | RAW10 | 28 | 4:3 — narrower than 720p across, taller down it. Both axes whole macroblocks, so no encoder trim |
+| IMX708 | 800×600 | RAW10 | 28 | SVGA, the middle 4:3 step. Width is whole macroblocks; height needs the same encoder trim as 1080 |
+| IMX708 | 640×480 | RAW10 | 28 | 15% of the pixels. A tight 4:3 window out of a 16:9 field, so it reframes rather than shrinks |
 | IMX219 | 1640×1232 | RAW10 | 30 | 2×2 binned, full FOV — recommended first target |
 | IMX219 | 3280×2464 | RAW10 | 15 | Full resolution, higher bandwidth |
+
+### The IMX708 cannot downscale
+
+Worth recording, because it is the obvious thing to reach for and it is not
+there. The CCS scaling block at `0x0400..0x0407` is **read-only** on this part:
+every byte of it was written and read back unchanged on the bench, while
+`0x0408..0x040F`, the digital crop immediately after it, took every write. The
+registers exist and report the CCS defaults — `scaling_mode` 0, `scale_m` 16,
+`scale_n` 16, meaning "1:1, not scaling" — and are hardwired there. Raspberry
+Pi's own driver writes none of them in any of its four modes, which now looks
+less like an omission.
+
+So an output size smaller than the digital crop does not resample the crop, it
+crops again from the crop's origin — and quietly, because the output-size
+registers *do* take: the frame arrives at exactly the size asked for, correctly
+formed and sharp, showing a corner of the field. Below the crop size,
+resolution has to come from binning, from moving the analog readout window, or
+from the P4's ISP downstream.
+
+Two modes that drove the scaler were written and tested against this, then
+removed once it was clear the sensor ignores them. If a later revision needs
+re-testing, the method is a byte at a time: write, read back, see whether it
+moved.
+
+### One readout, three crops
+
+The five IMX708 modes are one readout, not five. Each is a centred digital
+crop of the same 2×2-binned 2304×1296 field with the same line and frame
+timing, so a smaller mode buys CSI bandwidth, PSRAM and encode time and pays
+for it in field of view. It does not make the sensor faster — every mode reads
+out at 28 fps — but it does recover frames the pipeline drops at full size:
+`imx708_video` measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode.
+Exposure range does not change.
+Nothing is scaled, so 640×480 is a narrow window on the middle of the scene
+rather than the whole scene shrunk. Pick the start-up mode with
+`CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`, or change it at run time by
+passing `imx708_format_by_index()` / `imx708_format_by_size()` to esp_video's
+`VIDIOC_S_SENSOR_FMT` before you allocate buffers.
+
+## Choosing a resolution
+
+The start-up mode is a build-time setting, `CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`
+(and `CAMERA_IMX219_...` for the other sensor). Indices run largest to smallest:
+
+| Index | IMX708 | Index | IMX219 |
+| ----- | ------ | ----- | ------ |
+| 0 | 1920×1080 (default) | 0 | 1640×1232 (default) |
+| 1 | 1280×720 | 1 | 3280×2464 |
+| 2 | 1024×768 | 2 | 1632×1232 |
+| 3 | 800×600 | | |
+| 4 | 640×480 | | |
+
+### Interactively
+
+```
+idf.py menuconfig
+```
+
+Then `Component config` → `Camera Sensor (IMX add-on)`. The option sits
+indented under **Support IMX708 (Raspberry Pi Camera Module 3 / NoIR 3)**, as
+**Default MIPI-CSI mode index**. Set it, exit, save, and rebuild. Each index
+has help text describing what that mode costs in field of view.
+
+### From a script or CI
+
+`sdkconfig.defaults` is only read when `sdkconfig` does **not** exist, so
+adding a line to it and rebuilding an existing tree changes nothing — the build
+succeeds and silently keeps the old mode. Delete `sdkconfig` first:
+
+```bash
+echo 'CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT=2' > sdkconfig.mode
+rm -f sdkconfig
+idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.mode" build
+```
+
+On PowerShell the equivalents are `Remove-Item sdkconfig -Force` and:
+
+```powershell
+Set-Content -Path sdkconfig.mode -Value 'CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT=2' -Encoding ascii
+```
+
+`-Encoding ascii` matters: Windows PowerShell 5.1's `utf8` writes a byte-order
+mark, and kconfgen then reports `ignoring malformed line '#'`. (PowerShell 7
+has `utf8NoBOM`; 5.1 does not.)
+
+Two things that will otherwise cost you an afternoon:
+
+- **`SDKCONFIG_DEFAULTS` sticks in the CMake cache.** Once passed, later plain
+  `idf.py build` calls keep using it, and deleting the file it names breaks the
+  build with `ninja: error: rebuilding 'build.ninja': subcommand failed`. Pass
+  it explicitly every time, or `idf.py fullclean`.
+- **An out-of-range index is silently clamped**, not rejected. Ask for 7 and
+  kconfgen quietly gives you the default, 0, and builds a working image in the
+  wrong mode. If a mode seems not to have taken, check the driver's log line —
+  it prints the mode it actually set:
+
+  ```
+  I (965) imx708: set format: MIPI_2lane_24Minput_RAW10_1024x768_binned_28fps
+  ```
+
+### From application code
+
+Both routes above are build-time: you edit a value, rebuild and flash. This one
+is the same for the *examples*, whose knobs are `#define`s — but it is the call
+an application makes, and an application that reads its index from somewhere
+(a serial command, NVS, a button) can change resolution without being rebuilt.
+That is the only sense in which any of this is run-time.
+
+`imx708_format_by_index()` and
+`imx708_format_by_size()`, declared in `imx708.h`, return a format to hand to
+esp_video's `VIDIOC_S_SENSOR_FMT`:
+
+```c
+#include "imx708.h"
+
+int fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDONLY);
+
+const esp_cam_sensor_format_t *want = imx708_format_by_index(2);   /* 1024x768 */
+ioctl(fd, VIDIOC_S_SENSOR_FMT, (void *)want);
+
+struct v4l2_format f = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+f.fmt.pix.width       = want->width;
+f.fmt.pix.height      = want->height;
+f.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
+ioctl(fd, VIDIOC_S_FMT, &f);
+/* ... then REQBUFS, QUERYBUF, QBUF, STREAMON as usual */
+```
+
+Do it **before the first `VIDIOC_STREAMON`**, and treat that as a hard rule
+rather than tidiness. Two reasons:
+
+- Buffers are sized for the format in force when they were requested, so a
+  mode change under allocated buffers is wrong by construction.
+- **3A does not survive a later switch.** The ISP/IPA pipeline belongs to
+  `esp_video_init()`, and nothing re-binds it to a new geometry while it runs —
+  `esp_video_isp_pipeline_init()` is not in a public header — so a mode change
+  after streaming has begun moves the geometry and leaves auto-exposure,
+  auto-white-balance and autofocus behind. Measured: the frame is the right
+  size and correctly formed, and nearly black, with the `esp_ipa_af` log lines
+  simply absent from that point on.
+
+So: one switch per pipeline, before streaming.
+
+**To change resolution again without rebooting, cycle the stack around the
+switch.** `close()` → `esp_video_deinit()` → `esp_video_init()` → reopen →
+select → capture puts you back in front of the first `STREAMON`, where the
+switch is the ordinary legal one and 3A is rebuilt with it.
+`esp_video_isp_pipeline_init()` being private does not matter; deinit/init
+reaches it from further out. Sensor detect does reset the mode to the Kconfig
+default on the way through, which is irrelevant — you select afterwards.
+
+Measured on hardware: five modes captured back to back off one boot, every CRC
+good, free heap and free PSRAM **byte-identical** after all five cycles, the
+VCM re-detected and autofocus re-converging each time (646/641/641/641/636
+across five independent searches). The cost is ~120 ms for the cycle itself,
+plus however long 3A needs to settle afterwards.
+
+Verified on hardware, both examples: firmware built for mode 0, switched at
+start-up, with 3A working. `imx708_snapshot` at 800×600 gives a correctly
+exposed, in-focus frame (`bytesused=960000`, autofocus 512 → 641);
+`imx708_video` at 1024×768 records 224 frames, 0 failed, 28.0 fps.
+
+Both examples exercise this path — `CAPTURE_MODE_INDEX` in
+`imx708_snapshot_main.c`, `VIDEO_MODE_INDEX` in `imx708_video_main.c`, `-1` by
+default to keep the build-time mode. `imx708_snapshot` also carries two worked
+examples of driving it at run time: `MODE_CYCLE` walks the whole table off one
+boot, and `MODE_CONSOLE` (default on) takes a digit typed at the console and
+captures that mode — no rebuild, no reboot, no reflash. The index has to come
+from *somewhere*; a `#define` is the simplest source, and a keystroke, an NVS
+entry or an HTTP parameter are the same call with a different one.
+
+The index is the unambiguous selector; look-up by size returns the first match.
+The IMX219 driver has no equivalent yet, and is build-time only.
 
 Developed and measured on a **Waveshare ESP32-P4-WIFI6** with **ESP-IDF v5.4.0**.
 That is the only combination this has run on; the manifest's `idf: ">=5.4"` is
@@ -40,13 +217,13 @@ log is `detected IMX708, PID=0x0708`.
 ## Install
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.2.0"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.3.0"
 ```
 
 Or start from a working example, which brings its own `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.2.0:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.3.0:imx708_capture"
 ```
 
 Then in `menuconfig`:

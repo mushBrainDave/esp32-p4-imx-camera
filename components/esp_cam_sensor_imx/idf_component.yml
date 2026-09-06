@@ -1,9 +1,10 @@
-version: "0.2.0"
+version: "0.3.0"
 description: >-
   Sony IMX-series MIPI-CSI camera sensor drivers for the ESP32-P4
   esp_cam_sensor / esp_video framework, plus the DW9807 autofocus VCM. Brings
   the Raspberry Pi Camera Module 3 (IMX708) to the ESP32-P4: streaming, ISP
-  tuning and autofocus. Also drives the Raspberry Pi Camera Module v2 / NoIR v2
+  tuning, autofocus and five resolution modes switchable at run time. Also
+  drives the Raspberry Pi Camera Module v2 / NoIR v2
   (IMX219): streaming, ISP tuning, stills and H.264 video, verified on hardware.
   The v2 module is fixed-focus, so no autofocus there.
 url: https://github.com/mushBrainDave/esp32-p4-imx-camera/tree/main/components/esp_cam_sensor_imx
@@ -55,6 +56,11 @@ files:
     - "examples/**/capture/**/*"
     - "examples/**/shot/**/*"
     - "examples/**/clip*/**/*"
+    # Mode comparisons and MODE_CONSOLE sessions, named after what they
+    # measured: mode_cycle/, mode2_1024x768/, console_test/, manual/.
+    - "examples/**/mode*/**/*"
+    - "examples/**/console*/**/*"
+    - "examples/**/manual/**/*"
     # `compote component pack` resolves --dest-dir relative to --project-dir,
     # so running it without an absolute path leaves the archive here. Keep a
     # previous archive out of the next one.

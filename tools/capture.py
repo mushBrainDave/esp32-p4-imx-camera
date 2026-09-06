@@ -67,6 +67,63 @@ VIDFRAME = re.compile(rb'VIDFRAME i=(\d+) t=(\d+) off=(\d+) len=(\d+) type=(\w+)
 # Both examples print this when they have finished, so there is no need to sit
 # out the rest of a --seconds that was guessed high.
 DONE_MARK = b'==== done'
+# imx708_snapshot's MODE_CONSOLE prompt. Spelled the same in both places on
+# purpose: it is how a scripted --keys run stays in step with the board, which
+# is busy for ~7 s per capture and says nothing meanwhile.
+MODE_PROMPT = b'MODESEL> '
+
+
+def echo_console(buf, pos, out=sys.stdout):
+    """Print console text as it arrives, stepping over binary payloads.
+
+    Needed only for --interactive: typing blind is no way to drive a prompt.
+    The payload is skipped by length rather than by looking for IMGEND, since
+    image bytes can spell anything - including that. Returns the position to
+    resume from, and how much payload is still to be skipped.
+    """
+    skip = 0
+    while True:
+        m = HDR.search(buf, pos)
+        if m:
+            out.write(buf[pos:m.end()].decode('utf-8', 'replace'))
+            pos, skip = m.end(), int(m.group(5))
+            have = min(skip, len(buf) - pos)
+            pos, skip = pos + have, skip - have
+            if skip:
+                break
+            continue
+        # No complete header ahead. Hold back anything from a partial one so a
+        # header that arrives split across two reads is still matched next time.
+        tail = buf.rfind(b'IMGSTART', pos)
+        end = tail if tail != -1 else len(buf)
+        if end > pos:
+            out.write(buf[pos:end].decode('utf-8', 'replace'))
+            pos = end
+        break
+    out.flush()
+    return pos, skip
+
+
+def read_keypress():
+    """One keystroke, or None if nobody has pressed anything yet.
+
+    Wrapped because there may be no console to read from at all - stdin
+    redirected to a file, or the script run from something that is not a
+    terminal. That should cost the run its keyboard, not the capture.
+    """
+    try:
+        try:
+            import msvcrt
+        except ImportError:
+            import select
+            if select.select([sys.stdin], [], [], 0)[0]:
+                return sys.stdin.read(1).encode()
+            return None
+        if msvcrt.kbhit():
+            return msvcrt.getch()
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 def is_project(d):
@@ -219,6 +276,14 @@ def main():
                          'when it is a project, else the imx708_snapshot example.')
     ap.add_argument('--keep-raw', action='store_true',
                     help='also keep the undecoded .raw payload alongside the .bmp')
+    ap.add_argument('--keys', default=None,
+                    help='drive a MODE_CONSOLE build without typing: a sequence like '
+                         '"4,2,q" sent one keystroke per prompt. The board takes ~7 s '
+                         'per capture, so the send waits for the prompt rather than '
+                         'guessing at delays.')
+    ap.add_argument('--interactive', action='store_true',
+                    help='forward your keystrokes to a MODE_CONSOLE build and echo the '
+                         'board back, so modes can be picked by hand while it runs.')
     args = ap.parse_args()
 
     project = resolve_project(args.project)
@@ -257,18 +322,42 @@ def main():
     time.sleep(0.15)
     s.rts = False
 
+    keys = [k.strip() for k in args.keys.split(',')] if args.keys else []
+    if args.interactive:
+        print('--- interactive: press 0-4 for a mode, q to finish ---')
     print(f'--- listening on {args.port} at {args.baud} for up to {args.seconds:.0f}s ---')
     buf = bytearray()
+    echo_pos, echo_skip = 0, 0
+    prompts_answered = 0
     t0 = time.time()
     while time.time() - t0 < args.seconds:
         d = s.read(65536)
         if d:
             buf += d
+            if args.interactive:
+                if echo_skip:
+                    have = min(echo_skip, len(buf) - echo_pos)
+                    echo_pos, echo_skip = echo_pos + have, echo_skip - have
+                if not echo_skip:
+                    echo_pos, echo_skip = echo_console(buf, echo_pos)
             # Both examples announce when they are finished, so a --seconds
             # guessed on the high side costs nothing.
             if DONE_MARK in d or DONE_MARK in buf[-len(d) - 32:]:
                 print(f'--- board reported done after {time.time() - t0:.1f}s ---')
                 break
+            # One queued keystroke per prompt. Counting prompts rather than
+            # timing them keeps a scripted run in step however long a capture
+            # takes, and never sends into the middle of a payload - the board
+            # only prints the prompt when it is back at the top of its loop.
+            if keys and buf.count(MODE_PROMPT) > prompts_answered:
+                k = keys.pop(0)
+                prompts_answered += 1
+                print(f'--- sending {k!r} ---')
+                s.write(k.encode())
+        if args.interactive:
+            k = read_keypress()
+            if k:
+                s.write(k)
     s.close()
 
     images, notes, pos = [], [], 0

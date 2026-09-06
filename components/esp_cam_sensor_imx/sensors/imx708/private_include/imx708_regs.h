@@ -49,6 +49,53 @@ extern "C" {
 #define IMX708_DGTL_GAIN_MAX        0xffff
 #define IMX708_DGTL_GAIN_DEFAULT    0x0100
 
+/*
+ * Output size and digital crop.
+ *
+ * The IMX708 pipeline runs analog crop -> binning -> digital crop -> output
+ * size. There is a scaler between the last two in the CCS register map, and it
+ * does not work - see below - so output size is always written equal to the
+ * digital crop.
+ *
+ * 0x0400..0x0407 are the CCS / SMIA++ standard scaling block, the same
+ * addresses IMX219's datasheet documents. Raspberry Pi's imx708.c never writes
+ * them in any of its four modes, and neither does its imx219.c, so there was
+ * nothing to cross-reference them against the way the rest of this file is.
+ *
+ * MEASURED 2026-09-05, and the answer is no: the whole block is READ-ONLY on
+ * this part. Every byte of 0x0400..0x0407 was written with its own value
+ * XOR 0x02 and read back unchanged, while 0x0408..0x040F - the digital crop
+ * immediately after it - took every write. The registers do exist and report
+ * the CCS defaults (scaling_mode 0, scale_m 16, scale_n 16, i.e. "1:1, not
+ * scaling"), but they are hardwired to them.
+ *
+ * So the IMX708 cannot downscale. Output size smaller than the digital crop
+ * does not resample the crop, it crops again from the crop's origin - a
+ * 2304x1296 crop with a 1152x648 output size emits the top-left 1152x648,
+ * confirmed by cross-correlating such a frame against a 1920x1080 one of the
+ * same scene. Resolution below the crop size has to come from binning, from
+ * moving the analog readout window, or from the P4's own ISP downstream.
+ *
+ * The scaling registers are deliberately not defined below. Writing this
+ * down rather than leaving it to be rediscovered is the whole point, but a
+ * block that cannot be written does not need names, and having them would only
+ * invite the next person to try. The addresses are above if a later revision
+ * ever needs re-testing: write a byte, read it back, and see whether it moved.
+ */
+#define IMX708_REG_X_OUTPUT_SIZE_H  0x034c
+#define IMX708_REG_X_OUTPUT_SIZE_L  0x034d
+#define IMX708_REG_Y_OUTPUT_SIZE_H  0x034e
+#define IMX708_REG_Y_OUTPUT_SIZE_L  0x034f
+
+#define IMX708_REG_DIG_CROP_X_H     0x0408
+#define IMX708_REG_DIG_CROP_X_L     0x0409
+#define IMX708_REG_DIG_CROP_Y_H     0x040a
+#define IMX708_REG_DIG_CROP_Y_L     0x040b
+#define IMX708_REG_DIG_CROP_W_H     0x040c
+#define IMX708_REG_DIG_CROP_W_L     0x040d
+#define IMX708_REG_DIG_CROP_H_H     0x040e
+#define IMX708_REG_DIG_CROP_H_L     0x040f
+
 /* Quad-Bayer re-mosaic low-pass filter. Only the full-resolution mode
    re-mosaics, so binned modes must explicitly disable it. */
 #define IMX708_REG_LPF_INTENSITY_EN 0xc428

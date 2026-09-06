@@ -62,6 +62,50 @@ menu "Camera Sensor (IMX add-on)"
                 Register the IMX708 in the esp_cam_sensor auto-detect list so
                 esp_video probes for it automatically at start-up.
 
+        config CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT
+            int "Default MIPI-CSI mode index"
+            default 0
+            range 0 4
+            help
+                Which entry of the driver's mode table the sensor comes up in.
+
+                All five are the same 2x2-binned RAW10 readout at 28 fps and
+                differ only in how much of it is digitally cropped away, so a
+                smaller mode buys CSI bandwidth, PSRAM and encode time, and
+                pays in field of view. It does not make the sensor faster -
+                every mode reads out at 28 fps - but it does recover frames the
+                pipeline drops at full size: imx708_video measures 27.3 fps at
+                1920x1080 and 28.0 at every smaller mode. Exposure range does
+                not change. Nothing is scaled: a smaller mode is a narrower window on
+                the middle of the scene, not the whole scene shrunk.
+
+                  0 - 1920x1080, 83% of the field each way. The general-purpose
+                      default and the mode the examples were measured at.
+                  1 - 1280x720, 56% of the field each way, 44% of the pixels.
+                      Both axes are whole 16-pixel H.264 macroblocks, so unlike
+                      1080 this needs no height trim before the encoder.
+                  2 - 1024x768, 44% of the field across and 59% up and down,
+                      38% of the pixels. 4:3, so it sees less than mode 1
+                      horizontally and more vertically. The only mode whose
+                      width and height are both whole 16-pixel macroblocks
+                      (64x48) - even 1080 is not - so nothing has to be
+                      trimmed before the encoder.
+                  3 - 800x600, 35% of the field across and 46% up and down,
+                      23% of the pixels. SVGA, the middle 4:3 step. 800 is 50
+                      whole macroblocks but 600 is 37.5, so like 1080 - and
+                      unlike every other mode here - it needs the encoder's
+                      height trim.
+                  4 - 640x480, 15% of the pixels. A tight window - 28% of the
+                      field horizontally and 37% vertically - and 4:3 out of a
+                      16:9 field, so it frames the scene differently rather
+                      than showing less of it evenly.
+
+                Modes are ordered largest to smallest.
+
+                An application can override this at run time: pass a mode from
+                imx708_format_by_index() or imx708_format_by_size() to
+                esp_video's VIDIOC_S_SENSOR_FMT before allocating buffers.
+
     endif # CAMERA_IMX708
 
 endmenu
