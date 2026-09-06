@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  *
  * Sony IMX708 (Raspberry Pi Camera Module 3 / NoIR 3) driver for the ESP32-P4
- * esp_cam_sensor framework. Bring-up scope: 2x2 binned 2304x1296 RAW10 stream.
+ * esp_cam_sensor framework. One 2x2 binned RAW10 readout at 28 fps, offered as
+ * three centred digital crops of it: 1920x1080, 1280x720 and 640x480.
  * Autofocus VCM (I2C 0x0c) and PDAF are out of scope for now — the lens parks
  * at its rest position.
  */
@@ -48,8 +49,88 @@ static const char *TAG = "imx708";
 /* ------------------------------------------------------------------ */
 /* Formats                                                             */
 /* ------------------------------------------------------------------ */
+/*
+ * Mode indices. These are what CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT
+ * selects between and what imx708_format_by_index() hands out, so a mode's
+ * number is part of the driver's interface: renumbering silently changes what
+ * an existing build comes up in, with nothing to warn the person who wrote
+ * that number down. **Append here, do not insert.**
+ *
+ * The table is ordered largest to smallest, and while this release was still
+ * unreleased that ordering was maintained by inserting rather than appending -
+ * 1024x768 at 2 and then 800x600 at 3, moving 640x480 twice. That was free
+ * only because 0.2.0 released a single 1920x1080 mode, so index 1 and above
+ * existed nowhere but this repository. It stops being free the moment this
+ * release ships, and the ordering is a convenience where the numbering is an
+ * interface. When the two conflict, append: the table stops being sorted
+ * rather than a mode changing its number.
+ */
+enum {
+    IMX708_FMT_1920x1080_RAW10_28FPS = 0,
+    IMX708_FMT_1280x720_RAW10_28FPS,
+    IMX708_FMT_1024x768_RAW10_28FPS,
+    IMX708_FMT_800x600_RAW10_28FPS,
+    IMX708_FMT_640x480_RAW10_28FPS,
+    IMX708_FMT_MAX,
+};
+
+/*
+ * One entry per mode even though all three are currently identical: every mode
+ * is a digital crop of the same binned readout, so line and frame timing - and
+ * with them the frame rate and the whole exposure range - do not move. Keeping
+ * them separate is what lets a future mode change its own VTS without the
+ * others silently inheriting it.
+ */
 static const esp_cam_sensor_isp_info_t imx708_isp_info[] = {
-    {
+    [IMX708_FMT_1920x1080_RAW10_28FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX708_PIXEL_RATE,
+            .hts = IMX708_HTS,
+            .vts = IMX708_VTS,
+            .exp_def = 2000,
+            .gain_def = IMX708_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX708_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX708_FMT_1280x720_RAW10_28FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX708_PIXEL_RATE,
+            .hts = IMX708_HTS,
+            .vts = IMX708_VTS,
+            .exp_def = 2000,
+            .gain_def = IMX708_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX708_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX708_FMT_1024x768_RAW10_28FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX708_PIXEL_RATE,
+            .hts = IMX708_HTS,
+            .vts = IMX708_VTS,
+            .exp_def = 2000,
+            .gain_def = IMX708_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX708_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX708_FMT_800x600_RAW10_28FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX708_PIXEL_RATE,
+            .hts = IMX708_HTS,
+            .vts = IMX708_VTS,
+            .exp_def = 2000,
+            .gain_def = IMX708_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX708_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX708_FMT_640x480_RAW10_28FPS] = {
         .isp_v1_info = {
             .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
             .pclk = IMX708_PIXEL_RATE,
@@ -64,7 +145,7 @@ static const esp_cam_sensor_isp_info_t imx708_isp_info[] = {
 };
 
 static const esp_cam_sensor_format_t imx708_format_info[] = {
-    {
+    [IMX708_FMT_1920x1080_RAW10_28FPS] = {
         /* 1920 wide keeps the line inside what the P4 CSI/ISP path can carry;
            see imx708_mode_1920x1080_regs for the evidence behind that. */
         .name = "MIPI_2lane_24Minput_RAW10_1920x1080_binned_28fps",
@@ -76,7 +157,92 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
         .regs = imx708_mode_1920x1080_regs,
         .regs_size = ARRAY_SIZE(imx708_mode_1920x1080_regs),
         .fps = 28,
-        .isp_info = &imx708_isp_info[0],
+        .isp_info = &imx708_isp_info[IMX708_FMT_1920x1080_RAW10_28FPS],
+        .mipi_info = {
+            .mipi_clk = IMX708_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX708_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+    [IMX708_FMT_1280x720_RAW10_28FPS] = {
+        /* A centred crop of the same readout: 44% of the pixels, 56% of the
+           field of view each way, and the same 28 fps. Both axes are whole
+           H.264 macroblocks, so nothing has to be trimmed before the encoder. */
+        .name = "MIPI_2lane_24Minput_RAW10_1280x720_binned_28fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX708_INCLK_FREQ_HZ,
+        .width = 1280,
+        .height = 720,
+        .regs = imx708_mode_1280x720_regs,
+        .regs_size = ARRAY_SIZE(imx708_mode_1280x720_regs),
+        .fps = 28,
+        .isp_info = &imx708_isp_info[IMX708_FMT_1280x720_RAW10_28FPS],
+        .mipi_info = {
+            .mipi_clk = IMX708_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX708_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+    [IMX708_FMT_1024x768_RAW10_28FPS] = {
+        /* 4:3, and the only mode whose width and height are both whole H.264
+           macroblocks (64x48) - 1080 is not. Sees less across than mode 1 and
+           more up and down, on fewer pixels. */
+        .name = "MIPI_2lane_24Minput_RAW10_1024x768_binned_28fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX708_INCLK_FREQ_HZ,
+        .width = 1024,
+        .height = 768,
+        .regs = imx708_mode_1024x768_regs,
+        .regs_size = ARRAY_SIZE(imx708_mode_1024x768_regs),
+        .fps = 28,
+        .isp_info = &imx708_isp_info[IMX708_FMT_1024x768_RAW10_28FPS],
+        .mipi_info = {
+            .mipi_clk = IMX708_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX708_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+    [IMX708_FMT_800x600_RAW10_28FPS] = {
+        /* SVGA, the middle 4:3 step. 800 is 50 whole macroblocks; 600 is 37.5,
+           so this and 1080 are the only modes needing the encoder's height
+           trim. Width alignment is the half that matters - it cannot be
+           trimmed without shearing the picture. */
+        .name = "MIPI_2lane_24Minput_RAW10_800x600_binned_28fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX708_INCLK_FREQ_HZ,
+        .width = 800,
+        .height = 600,
+        .regs = imx708_mode_800x600_regs,
+        .regs_size = ARRAY_SIZE(imx708_mode_800x600_regs),
+        .fps = 28,
+        .isp_info = &imx708_isp_info[IMX708_FMT_800x600_RAW10_28FPS],
+        .mipi_info = {
+            .mipi_clk = IMX708_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX708_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+    [IMX708_FMT_640x480_RAW10_28FPS] = {
+        /* 15% of the pixels, and a much tighter window - 28% of the field
+           horizontally, 37% vertically. 4:3 out of a 16:9 field, so this is a
+           different framing of the scene rather than a smaller copy of it. */
+        .name = "MIPI_2lane_24Minput_RAW10_640x480_binned_28fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX708_INCLK_FREQ_HZ,
+        .width = 640,
+        .height = 480,
+        .regs = imx708_mode_640x480_regs,
+        .regs_size = ARRAY_SIZE(imx708_mode_640x480_regs),
+        .fps = 28,
+        .isp_info = &imx708_isp_info[IMX708_FMT_640x480_RAW10_28FPS],
         .mipi_info = {
             .mipi_clk = IMX708_MIPI_CSI_LINE_RATE,
             .lane_num = 2,
@@ -86,7 +252,69 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
     },
 };
 
-#define IMX708_DEFAULT_FORMAT_INDEX 0
+/*
+ * Fall back to mode 0 if the Kconfig symbol is absent. It will be, in any build
+ * tree whose sdkconfig predates this option and has not been reconfigured -
+ * and without this the failure is "CONFIG_..._INDEX_DEFAULT undeclared" from
+ * inside the driver, which points at the wrong thing entirely. This way a stale
+ * tree quietly keeps the behaviour it already had.
+ */
+#ifndef CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT
+#define CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT 0
+#endif
+
+#define IMX708_DEFAULT_FORMAT_INDEX CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT
+
+/*
+ * Stated against the enum rather than a literal, so it keeps itself honest as
+ * modes are added. The Kconfig range is the one place still counting by hand,
+ * and it is only an input check: a value that slips past it lands here.
+ */
+_Static_assert(IMX708_DEFAULT_FORMAT_INDEX < IMX708_FMT_MAX,
+               "CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT is out of range");
+_Static_assert(IMX708_FMT_MAX == ARRAY_SIZE(imx708_format_info),
+               "mode index enum and format table disagree");
+_Static_assert(IMX708_FMT_MAX == ARRAY_SIZE(imx708_isp_info),
+               "mode index enum and isp_info table disagree");
+
+/* ------------------------------------------------------------------ */
+/* Mode lookup for applications                                        */
+/* ------------------------------------------------------------------ */
+/*
+ * esp_video can change the sensor mode while the application is running -
+ * VIDIOC_S_SENSOR_FMT takes an esp_cam_sensor_format_t and resizes the stream
+ * buffers around it - but it offers no way to come by one. VIDIOC_ENUM_FRAMESIZES
+ * only ever reports the mode already in use, and the sensor handle itself is
+ * out of reach for an application that let esp_video auto-detect the camera.
+ * These give such an application something to pass.
+ *
+ * They return pointers into the static table above, and must keep doing so:
+ * imx708_set_format() stores the caller's pointer in dev->cur_format and
+ * esp_video caches it a second time, so handing back the address of a copy
+ * would leave both reading freed memory as soon as the caller's frame went.
+ */
+size_t imx708_format_count(void)
+{
+    return ARRAY_SIZE(imx708_format_info);
+}
+
+const esp_cam_sensor_format_t *imx708_format_by_index(size_t index)
+{
+    if (index >= ARRAY_SIZE(imx708_format_info)) {
+        return NULL;
+    }
+    return &imx708_format_info[index];
+}
+
+const esp_cam_sensor_format_t *imx708_format_by_size(uint16_t width, uint16_t height)
+{
+    for (size_t i = 0; i < ARRAY_SIZE(imx708_format_info); i++) {
+        if (imx708_format_info[i].width == width && imx708_format_info[i].height == height) {
+            return &imx708_format_info[i];
+        }
+    }
+    return NULL;
+}
 
 /* ------------------------------------------------------------------ */
 /* Gain table                                                          */
@@ -222,10 +450,31 @@ static esp_err_t imx708_set_vflip(esp_cam_sensor_device_t *dev, int enable)
     return imx708_set_reg_bits(dev->sccb_handle, IMX708_REG_ORIENTATION, 1, 1, enable ? 1 : 0);
 }
 
+/*
+ * Exposure ceiling. Integration time cannot exceed frame_length - 48 lines,
+ * and frame_length is a per-mode value carried in isp_info, not a constant of
+ * the sensor. Every mode shipped today is a crop of one readout and so shares
+ * a VTS, but a mode that changed the frame rate would change it, and the
+ * failure would be quiet: an exposure past frame_length silently does not take
+ * effect, so the AE loop sees no response to its own request and keeps asking.
+ */
+static uint32_t imx708_exposure_max(esp_cam_sensor_device_t *dev)
+{
+    uint32_t vts = IMX708_VTS;
+
+    if (dev && dev->cur_format && dev->cur_format->isp_info) {
+        vts = dev->cur_format->isp_info->isp_v1_info.vts;
+    }
+    if (vts <= IMX708_EXPOSURE_OFFSET + IMX708_EXPOSURE_MIN) {
+        return IMX708_EXPOSURE_MIN;
+    }
+    return vts - IMX708_EXPOSURE_OFFSET;
+}
+
 /* Exposure in lines (16-bit reg 0x0202). */
 static esp_err_t imx708_set_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
 {
-    uint32_t max = IMX708_VTS - IMX708_EXPOSURE_OFFSET;
+    uint32_t max = imx708_exposure_max(dev);
     if (lines < IMX708_EXPOSURE_MIN) {
         lines = IMX708_EXPOSURE_MIN;
     }
@@ -298,7 +547,7 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
     case ESP_CAM_SENSOR_EXPOSURE_VAL:
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
         qdesc->number.minimum = IMX708_EXPOSURE_MIN;
-        qdesc->number.maximum = IMX708_VTS - IMX708_EXPOSURE_OFFSET;
+        qdesc->number.maximum = imx708_exposure_max(dev);
         qdesc->number.step = 1;
         qdesc->default_value = 1288;
         break;
@@ -609,6 +858,8 @@ esp_cam_sensor_device_t *imx708_detect(esp_cam_sensor_config_t *config)
         goto err;
     }
     ESP_LOGI(TAG, "detected IMX708, PID=0x%04x", dev->id.pid);
+
+
     return dev;
 
 err:
