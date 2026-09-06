@@ -7,7 +7,6 @@
 
 #include "esp_cam_sensor.h"
 #include "esp_cam_sensor_types.h"
-#include "imx708_regs.h"
 
 #ifdef __cplusplus
 extern "C" {
