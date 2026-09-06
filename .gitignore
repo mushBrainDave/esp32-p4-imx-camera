@@ -39,6 +39,8 @@ dependencies.lock
 .idea/
 *.swp
 *~
+/.vs/slnx.sqlite
+/.vs
 
 # ==========================================================================
 # OS cruft
@@ -64,9 +66,17 @@ Desktop.ini
 # These are debug artefacts, not deliverables.
 capture/
 shot/
-sweep/
 clip*/
 c6log*/
+
+# A run that compares configurations names its --out after what it measured,
+# so the sweep/ and mode/ output is one directory per data point:
+# sweep_1920x1080/, mode2_640x480/ and so on. Anchored to the repo root, which
+# is where capture.py is run from - unlike "clip" or "c6log" these are ordinary
+# words, and an unanchored mode*/ would swallow any source directory that
+# happened to start with them.
+/sweep*/
+/mode*/
 
 # tools/capture.py imports mp4.py, which leaves a bytecode cache next to it.
 __pycache__/
