@@ -8,10 +8,35 @@ serial link. Pins preset for the Waveshare ESP32-P4-WIFI6.
 with it off the example never touches the SD hardware. See
 [Getting frames off the board](#getting-frames-off-the-board).
 
-Frames are 1920x1080. The sensor's binned mode is 2304 wide and is **digitally
-cropped to 1920** — there is a datapath width ceiling between 1920 and 2048 px
-on the P4, above which the scene runs out and the edge columns duplicate each
-other exactly 2048 px apart. Do not "restore" the full width.
+Frames are 1920x1080 by default. Four smaller modes are available —
+1280x720, 1024x768, 800x600 and 640x480 — chosen with
+`CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT` (indices 0 to 4, largest to
+smallest). This example reads its geometry from `VIDIOC_G_FMT`, so it needs no
+change to follow: all five have been captured on hardware and CRC-checked.
+
+`CAPTURE_MODE_INDEX` in `main/imx708_snapshot_main.c` selects the mode through
+the driver API instead — `imx708_format_by_index()` and `VIDIOC_S_SENSOR_FMT`,
+with `-1` keeping the build-time mode and `0..4` picking one. It is a `#define`,
+so it still needs a rebuild and flash; what it shows is the call an application
+would make. The call has to run before the first `VIDIOC_STREAMON` — see that
+define's comment for why a later switch strands auto-exposure and autofocus.
+
+**Copy-pasteable commands for each mode** are in
+[`docs/cli-cookbook.md`](../../../../docs/cli-cookbook.md#resolution-modes),
+with the measured frame sizes. If you installed this from the component
+registry rather than the repo, the component README's *Choosing a resolution*
+section covers `menuconfig` and the scripted equivalent.
+
+Every mode is a centred digital crop of the same 2×2-binned 2304×1296 readout,
+so they all run at 28 fps with the same exposure range, and a smaller one costs
+field of view rather than buying frame rate. Nothing is scaled — the sensor's
+scaling block is read-only, so 640x480 is a narrow window on the middle of the
+scene, not the scene shrunk.
+
+Why 1920 and not the sensor's native 2304: there is a datapath width ceiling
+between 1920 and 2048 px on the P4, above which the scene runs out and the edge
+columns duplicate each other exactly 2048 px apart. Do not "restore" the full
+width.
 
 For the same thing served over WiFi instead of the cable, see
 [`imx708_wifi_snapshot`](https://github.com/mushBrainDave/esp32-p4-imx-camera/tree/main/examples/imx708_wifi_snapshot),

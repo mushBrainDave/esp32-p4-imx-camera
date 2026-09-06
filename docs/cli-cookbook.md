@@ -24,6 +24,7 @@ with `;` or `if ($?) { ... }`.
 - [Stills: WiFi](#stills-wifi)
 - [Video over USB](#video-over-usb)
 - [Video over WiFi](#video-over-wifi)
+- [Resolution modes](#resolution-modes)
 - [ESP32-C6 radio](#esp32-c6-radio)
 - [Post-mortem and instrumentation](#post-mortem-and-instrumentation)
 
@@ -654,6 +655,90 @@ E imx_wifi: giving up after 5 attempts, last reason 200: ...
 
 That is fine for a bring-up probe and thin for something meant to stream for
 hours; grep the log for `giving up` before concluding the AP is at fault.
+
+---
+
+## Resolution modes
+
+Five IMX708 modes, largest to smallest. All are centred crops of one binned
+readout, so they share timing and exposure — a smaller one costs field of view.
+
+| Index | Mode | Notes |
+| ----- | ---- | ----- |
+| 0 | 1920×1080 | Default. 16:9, widest field |
+| 1 | 1280×720 | 16:9 |
+| 2 | 1024×768 | 4:3 — narrower than 720p across, taller down it |
+| 3 | 800×600 | 4:3 |
+| 4 | 640×480 | 4:3, tightest |
+
+Set the mode, then capture. PowerShell, from the repo root — the `WriteAllLines`
+is deliberate, `Set-Content -Encoding utf8` on 5.1 writes a BOM that kconfgen
+then complains about:
+
+```powershell
+$sd = "components\esp_cam_sensor_imx\examples\imx708_snapshot\sdkconfig"; [IO.File]::WriteAllLines((Resolve-Path $sd), ((Get-Content $sd) -replace '^CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT=.*$','CONFIG_CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT=2'))
+```
+
+Then a still at that mode:
+
+```bash
+python tools/capture.py --flash --out mode2_1024x768
+```
+
+Or a clip — same idea, pointing the edit at the video example's `sdkconfig`:
+
+```bash
+python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_video --out clip_mode2
+```
+
+Neither example needs a code change to follow the mode. Both take their
+geometry from `VIDIOC_G_FMT`, and the video example derives its encoder height
+from whatever it is handed.
+
+**Confirm the mode actually took**, because an out-of-range index is silently
+clamped to 0 rather than rejected:
+
+```bash
+grep -a "set format" mode2_1024x768/log.txt
+```
+
+`idf.py menuconfig` is the alternative to editing `sdkconfig`: `Component
+config` → `Camera Sensor (IMX add-on)` → **Default MIPI-CSI mode index**.
+
+**Both examples can also switch mode without touching `sdkconfig`** — set
+`CAPTURE_MODE_INDEX` in `imx708_snapshot_main.c` or `VIDEO_MODE_INDEX` in
+`imx708_video_main.c` to `0..4` instead of `-1`. Still a rebuild, but it keeps
+the Kconfig alone, and it is the path an application would use to pick a mode
+from something it reads at start-up.
+
+It has to happen **before the first `VIDIOC_STREAMON`**: the ISP/IPA pipeline is
+built once by `esp_video_init()`, and a mode change after streaming has started
+moves the geometry but strands AE, AWB and autofocus — the frame comes back the
+right size and nearly black. That is why there is no "capture every mode in one
+run" sweep here.
+
+### What each mode measures
+
+Snapshot `bytesused` (RGB565, so `w*h*2`) and video, 8 s each:
+
+| Mode | bytesused | Encoded as | Frames | Failed | fps |
+| ---- | --------- | ---------- | ------ | ------ | --- |
+| 1920×1080 | 4147200 | 1920×1072 | 218 | 0 | 27.3 |
+| 1280×720 | 1843200 | 1280×720 | 224 | 0 | 28.0 |
+| 1024×768 | 1572864 | 1024×768 | 224 | 0 | 28.0 |
+| 800×600 | 960000 | 800×592 | 224 | 0 | 28.0 |
+| 640×480 | 614400 | 640×480 | 224 | 0 | 28.0 |
+
+1080p and 800×600 encode 8 lines short because H.264 codes in 16×16
+macroblocks and neither height divides by 16; the encoder reads a prefix of the
+buffer rather than over-reading past what the ISP wrote. Widths all divide, and
+that is the half that matters — width cannot be trimmed, because the encoder
+takes its line stride from the width it is given.
+
+**1080p is the only mode that misses 28 fps.** The encoder is the rate limiter
+at full size (36290 µs mean against 35714 available); every smaller mode has
+headroom to spare. A smaller mode does not make the sensor faster — all five
+read out at 28 fps — it buys the encode budget to keep up.
 
 ---
 

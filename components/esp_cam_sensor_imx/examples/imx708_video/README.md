@@ -191,11 +191,23 @@ I imx708_video: clip 3883868 bytes = 3900 kbit/s actual (asked for 4000)
 
 All at the top of `main/imx708_video_main.c`:
 
+The sensor's resolution is not set here — it is a driver option,
+`CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`, with five modes from
+1920x1080 down to 640x480. This example follows whichever is selected with
+no change: it takes width and height from `VIDIOC_G_FMT` and derives the
+encoder's 16-aligned height from what it is handed. Commands for each mode,
+and the frame rate each one actually sustains, are in
+[`docs/cli-cookbook.md`](../../../../docs/cli-cookbook.md#resolution-modes).
+`VIDEO_MODE_INDEX` in `main/imx708_video_main.c` selects one through the driver
+API rather than Kconfig — `-1` keeps the build-time mode, `0..4` picks one, and
+the call must happen before streaming starts. It is a `#define`, so changing it
+still means a rebuild and flash.
+
 | Define | Default | Notes |
 | ------ | ------- | ----- |
 | `VIDEO_SECONDS` | 8 | Recording length, once settled |
 | `VIDEO_BITRATE` | 4000000 | Bits per second the rate control aims at |
-| `VIDEO_FPS` | 28 | The sensor's only mode. Sets the bit budget per frame and the SPS timing; it does not make frames arrive faster |
+| `VIDEO_FPS` | 28 | Every sensor mode runs at 28 fps. Sets the bit budget per frame and the SPS timing; it does not make frames arrive faster |
 | `VIDEO_GOP` | 28 | One IDR per second. Shorter spends bitrate re-sending the scene; longer makes seeking coarser |
 | `VIDEO_QP_MIN/MAX` | 20 / 45 | Quality bounds for rate control. 51 is the codec maximum |
 | `REC_BUF_BYTES` | 6 MB | Clip buffer, and the real limit on length |

@@ -26,9 +26,23 @@ Modes implemented:
 
 | Sensor | Mode | Format | FPS | Notes |
 | ------ | ---- | ------ | --- | ----- |
-| IMX708 | 1920×1080 | RAW10 | 28 | 2×2 binned, digitally cropped — **the mode everything uses** |
+| IMX708 | 1920×1080 | RAW10 | 28 | 2×2 binned, digitally cropped — **the default, and what the examples were measured at** |
+| IMX708 | 1280×720 | RAW10 | 28 | The same readout cropped harder: 56% of the field each way |
+| IMX708 | 1024×768 | RAW10 | 28 | 4:3 — narrower than 720p across, taller down it |
+| IMX708 | 800×600 | RAW10 | 28 | SVGA. Needs the same encoder height trim as 1080 |
+| IMX708 | 640×480 | RAW10 | 28 | A tight 4:3 window, 15% of the pixels |
 | IMX219 | 1640×1232 | RAW10 | 30 | 2×2 binned, full FOV — recommended first target |
 | IMX219 | 3280×2464 | RAW10 | 15 | Full resolution, higher bandwidth |
+
+The five IMX708 modes are one readout, not five: each is a centred digital
+crop of the same 2×2-binned 2304×1296 field, with identical timing. A smaller
+mode buys CSI bandwidth, PSRAM and encode time and pays in field of view. It
+cannot make the sensor faster — every mode reads out at 28 fps — nor buy a
+longer exposure, but it does recover frames the pipeline drops at full size:
+`imx708_video` measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode. Nothing is scaled, because the
+sensor cannot: its scaling block is read-only, so a smaller mode is a narrower
+window rather than the whole scene shrunk. Pick one with
+`CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`.
 
 **Autofocus** is implemented for the IMX708's DW9807 VCM
 (`components/esp_cam_sensor_imx/motors/dw9807`, I2C `0x0c`), driven by
