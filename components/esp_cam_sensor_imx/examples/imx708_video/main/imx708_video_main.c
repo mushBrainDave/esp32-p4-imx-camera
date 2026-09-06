@@ -41,6 +41,8 @@
 #include "linux/videodev2.h"
 #include "esp_video_init.h"
 #include "esp_video_device.h"
+#include "esp_video_ioctl.h"
+#include "imx708.h"
 
 #include "esp_h264_enc_single_hw.h"
 #include "esp_h264_alloc.h"
@@ -80,8 +82,35 @@
 #define VIDEO_SECONDS       8
 
 /*
- * The sensor's only mode is 1920x1080 at 28 fps (see the IMX708 driver's mode
- * table), so that is the frame rate the encoder is told to expect. It affects
+ * Resolution, selected through the driver API rather than through Kconfig.
+ *
+ * This is a #define, so changing it still means a rebuild and a flash - it
+ * buys nothing over CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT as a way of
+ * changing resolution. What it is, is the call an application makes: an
+ * application that took this index from a serial command, NVS or a button
+ * could change resolution without being rebuilt. Nothing here reads one.
+ *
+ * -1 keeps whatever CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT selected; 0..4
+ * switches to that mode before any buffer is allocated. Indices run largest to
+ * smallest: 1920x1080, 1280x720, 1024x768, 800x600, 640x480.
+ *
+ * Nothing else in this file needs to know. Width and height are read back from
+ * the driver below, and the encoder's 16-aligned height is derived from them.
+ *
+ * Worth knowing which you pick: 1920x1080 is the only mode the encoder cannot
+ * quite keep up with, recording a measured 27.3 fps against the sensor's 28.
+ * Every smaller mode holds a true 28.0. See the README.
+ *
+ * There is no sweep here, unlike imx708_snapshot: the clip buffer holds one
+ * recording, so a run produces one clip in one mode.
+ */
+#define VIDEO_MODE_INDEX    (-1)
+
+/*
+ * Every sensor mode runs at 28 fps - they are all crops of one readout, so the
+ * line and frame timing never moves (see the IMX708 driver's mode table). That
+ * is the frame rate the encoder is told to expect, whichever mode is selected
+ * with CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT. It affects
  * rate control's bit budget per frame and the VUI timing written into the SPS;
  * it does not make frames arrive any faster. The clip is timestamped from the
  * frames that actually arrived, so a shortfall shows up as a slower measured
@@ -288,6 +317,34 @@ void app_main(void)
         goto cleanup;
     }
 
+#if VIDEO_MODE_INDEX >= 0
+    /*
+     * Move the sensor before anything is allocated.
+     *
+     * VIDIOC_S_SENSOR_FMT re-programs the sensor and updates what esp_video
+     * believes the capture geometry to be; the VIDIOC_S_FMT below then agrees
+     * the pixel format against it. That order is required - esp_video checks a
+     * requested width and height against the sensor's *current* mode and
+     * rejects anything else - which is why this sits above the G_FMT rather
+     * than replacing it.
+     *
+     * A failure here is not fatal: the mode simply stays as built, the G_FMT
+     * below reports what that is, and the recording is still valid.
+     */
+    {
+        const esp_cam_sensor_format_t *want = imx708_format_by_index(VIDEO_MODE_INDEX);
+        if (want == NULL) {
+            ESP_LOGE(TAG, "VIDEO_MODE_INDEX %d is out of range - recording in the built-in mode",
+                     VIDEO_MODE_INDEX);
+        } else if (ioctl(fd, VIDIOC_S_SENSOR_FMT, (void *)want) != 0) {
+            ESP_LOGE(TAG, "VIDIOC_S_SENSOR_FMT failed for %s - recording in the built-in mode",
+                     want->name);
+        } else {
+            ESP_LOGI(TAG, "sensor switched at run time to %ux%u", want->width, want->height);
+        }
+    }
+#endif
+
     /*
      * Ask the ISP for YUV420 rather than the snapshot example's RGB565.
      *
@@ -298,6 +355,10 @@ void app_main(void)
      * 1920x1080 from RGB565 in software 28 times a second would not fit in the
      * frame budget on this CPU; asking the ISP for the right format costs
      * nothing. It also drops the frame from 4.1 MB to 3.1 MB.
+     *
+     * Width and height come from the driver's current mode rather than being
+     * assumed here, so a smaller mode needs no change to this file - see the
+     * ENCODE_16_ALIGNED note for the one thing that does vary with height.
      */
     struct v4l2_format fmt = { .type = type };
     if (ioctl(fd, VIDIOC_G_FMT, &fmt) != 0) {

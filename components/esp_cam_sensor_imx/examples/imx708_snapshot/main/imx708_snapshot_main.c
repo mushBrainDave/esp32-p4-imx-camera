@@ -25,6 +25,8 @@
 #include "linux/videodev2.h"
 #include "esp_video_init.h"
 #include "esp_video_device.h"
+#include "esp_video_ioctl.h"
+#include "imx708.h"
 
 #include "driver/sdmmc_host.h"
 #include "esp_vfs_fat.h"
@@ -63,6 +65,40 @@
  * it finishes gives a frame from the middle of the search.
  */
 #define AIM_SECONDS         6
+
+/*
+ * Resolution, selected through the driver API rather than through Kconfig.
+ *
+ * This is a #define, so changing it still means a rebuild and a flash - it
+ * buys nothing over CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT as a way of
+ * changing resolution. What it is, is the call an application makes: an
+ * application that took this index from a serial command, NVS or a button
+ * could change resolution without being rebuilt. Nothing here reads one.
+ *
+ * CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT only decides what the sensor comes
+ * up in. -1 here keeps that; 0..4 switches to that mode instead, before any
+ * buffer is allocated. Indices run largest to smallest: 1920x1080, 1280x720,
+ * 1024x768, 800x600, 640x480.
+ *
+ * The switch has to happen before the first VIDIOC_STREAMON, and that is a
+ * real constraint rather than tidiness. Two reasons, in order of how much
+ * trouble they cause:
+ *
+ *   - Buffers are sized for the format in force when they were requested, so a
+ *     mode change under allocated buffers is wrong by construction.
+ *   - The ISP/IPA pipeline is created once, by esp_video_init(), and reads the
+ *     sensor geometry then. Nothing re-initialises it afterwards -
+ *     esp_video_isp_pipeline_init() is not in a public header - so a mode
+ *     change *after* streaming has begun moves the geometry and leaves 3A
+ *     behind: AE, AWB and autofocus all stop dead. Measured on hardware, and
+ *     the symptom is a correctly sized, correctly formed, nearly black frame,
+ *     with the esp_ipa_af log lines simply absent from that point on.
+ *
+ * So: one switch, before streaming. Changing resolution *during* a run means
+ * reflashing, or restarting the whole video stack, until esp_video exposes a
+ * way to re-init the pipeline.
+ */
+#define CAPTURE_MODE_INDEX  (0)
 
 /*
  * FOCUS_SWEEP: calibration mode. Step the VCM across its whole electrical range
@@ -216,7 +252,7 @@ static sdmmc_card_t *s_card = NULL;
 #if IMAGE_OUT_SD
 static esp_err_t sd_mount(void)
 {
-    /* The P4 gates SD power through on-chip LDO_VO4 — enable it first. */
+    /* The P4 gates SD power through on-chip LDO_VO4 ??? enable it first. */
     sd_pwr_ctrl_ldo_config_t ldo_cfg = { .ldo_chan_id = SD_LDO_CHANNEL };
     ESP_RETURN_ON_FALSE(sd_pwr_ctrl_new_on_chip_ldo(&ldo_cfg, &s_pwr_handle) == ESP_OK,
                         ESP_FAIL, TAG, "SD LDO init failed");
@@ -571,43 +607,53 @@ static void focus_sweep(int fd, int type, uint8_t **buffer, uint32_t w, uint32_t
 }
 #endif /* FOCUS_SWEEP */
 
-void app_main(void)
+#if CAPTURE_MODE_INDEX >= 0
+/*
+ * Point the sensor at a different mode.
+ *
+ * Two ioctls, in this order and not the other: VIDIOC_S_SENSOR_FMT re-programs
+ * the sensor and updates what esp_video believes the capture geometry to be,
+ * and VIDIOC_S_FMT then agrees the pixel format against it. Doing S_FMT first
+ * fails - esp_video checks the requested width and height against the sensor's
+ * *current* mode and rejects anything else.
+ *
+ * Must be called with no buffers allocated. See capture_at_current_mode().
+ */
+static bool select_sensor_mode(int fd, const esp_cam_sensor_format_t *want)
 {
-    ESP_LOGI(TAG, "IMX708 snapshot to SD");
+    struct v4l2_format f = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
 
-    /*
-     * Turn on the AF algorithm's own debug output. It prints one line per scan
-     * point - "pos=N, definition: D, luminance: L" - which is the only way to
-     * see what the search is actually deciding on: the ISP AF statistics are
-     * consumed inside the pipeline task and never reach the application. Needs
-     * CONFIG_LOG_MAXIMUM_LEVEL_DEBUG, or esp_log_write filters it out again.
-     *
-     * definition is the edge energy the search maximises. If it barely varies
-     * across positions, the search has nothing to discriminate with and will
-     * settle on whichever point it visited first, regardless of actual focus.
-     *
-     * This needs no sdkconfig change: the library was compiled with debug logs
-     * enabled (its LOG_LOCAL_LEVEL is fixed at *its* build time, not ours), so
-     * only the runtime per-tag level matters. Raising CONFIG_LOG_MAXIMUM_LEVEL
-     * does nothing here and switches ESP_LOGD on across the whole firmware.
-     */
-#if AF_DEBUG_LOG
-    esp_log_level_set("esp_ipa_af", ESP_LOG_DEBUG);
-#endif
-
-#if IMAGE_OUT_SD
-    if (sd_mount() != ESP_OK) {
-        return;
-    }
-#endif
-    if (esp_video_init(&cam_config) != ESP_OK) {
-        ESP_LOGE(TAG, "esp_video_init failed");
-        return;
+    if (ioctl(fd, VIDIOC_S_SENSOR_FMT, (void *)want) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_S_SENSOR_FMT failed for %s", want->name);
+        return false;
     }
 
-    int fd = open(CAM_DEV_PATH, O_RDONLY);
-    if (fd < 0) { ESP_LOGE(TAG, "open %s failed", CAM_DEV_PATH); return; }
+    f.fmt.pix.width = want->width;
+    f.fmt.pix.height = want->height;
+    f.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
+    if (ioctl(fd, VIDIOC_S_FMT, &f) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_S_FMT failed for %ux%u", want->width, want->height);
+        return false;
+    }
+    return true;
+}
+#endif /* CAPTURE_MODE_INDEX >= 0 */
 
+/*
+ * One capture at whatever mode the sensor is currently in.
+ *
+ * Everything here reads the geometry back from the driver rather than
+ * assuming it, so this is the same code for every mode. Buffers are torn
+ * down on the way out - they are sized for the format in force when they
+ * were requested, so the next mode needs its own set.
+ *
+ * settle_s is how long to recycle frames before keeping one, letting AE,
+ * AWB and autofocus converge. The first capture of a run needs the full
+ * window; later ones in a sweep are looking at the same scene with the
+ * lens already parked, so they need much less.
+ */
+static void capture_at_current_mode(int fd, const char *name, int settle_s)
+{
     const int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     struct v4l2_format fmt = { .type = type };
     ioctl(fd, VIDIOC_G_FMT, &fmt);
@@ -678,8 +724,8 @@ void app_main(void)
     goto done;
 #endif
 
-    ESP_LOGI(TAG, "aim the camera — settling for %d s...", AIM_SECONDS);
-    uint32_t t_end = esp_log_timestamp() + AIM_SECONDS * 1000;
+    ESP_LOGI(TAG, "aim the camera ??? settling for %d s...", settle_s);
+    uint32_t t_end = esp_log_timestamp() + settle_s * 1000;
     /*
      * Recycle frames for the aim window so the ISP's AE, AWB and autofocus can
      * converge, then keep the last one.
@@ -704,7 +750,7 @@ void app_main(void)
              */
             if (focus_now >= 0 && focus_now != focus_prev) {
                 ESP_LOGI(TAG, "  t=%4" PRIu32 " ms  focus %d -> %d",
-                         esp_log_timestamp() - (t_end - AIM_SECONDS * 1000), focus_prev, focus_now);
+                         esp_log_timestamp() - (t_end - settle_s * 1000), focus_prev, focus_now);
                 focus_prev = focus_now;
             }
         }
@@ -748,7 +794,7 @@ void app_main(void)
 #endif
     {
         const uint8_t *frame = stage_frame(fd, &buf, w, h, buffer);
-        emit_frame("imx708", frame, w, h, false);
+        emit_frame(name, frame, w, h, false);
 #if IMAGE_OUT_SD
         save_bmp565(OUT_PATH, frame, w, h);
 #endif
@@ -756,6 +802,69 @@ void app_main(void)
 
 done:
     ioctl(fd, VIDIOC_STREAMOFF, &type);
+    /*
+     * Hand the buffers back. esp_video maps REQBUFS with count 0 onto
+     * esp_video_release_buffer(), and there is no munmap in its ioctl set,
+     * so this is the whole teardown. Without it the next REQBUFS is asked
+     * to allocate a second set while the first is still held.
+     */
+    {
+        struct v4l2_requestbuffers rel = { .count = 0, .type = type, .memory = V4L2_MEMORY_MMAP };
+        ioctl(fd, VIDIOC_REQBUFS, &rel);
+    }
+}
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "IMX708 snapshot to SD");
+
+    /*
+     * Turn on the AF algorithm's own debug output. It prints one line per scan
+     * point - "pos=N, definition: D, luminance: L" - which is the only way to
+     * see what the search is actually deciding on: the ISP AF statistics are
+     * consumed inside the pipeline task and never reach the application. Needs
+     * CONFIG_LOG_MAXIMUM_LEVEL_DEBUG, or esp_log_write filters it out again.
+     *
+     * definition is the edge energy the search maximises. If it barely varies
+     * across positions, the search has nothing to discriminate with and will
+     * settle on whichever point it visited first, regardless of actual focus.
+     *
+     * This needs no sdkconfig change: the library was compiled with debug logs
+     * enabled (its LOG_LOCAL_LEVEL is fixed at *its* build time, not ours), so
+     * only the runtime per-tag level matters. Raising CONFIG_LOG_MAXIMUM_LEVEL
+     * does nothing here and switches ESP_LOGD on across the whole firmware.
+     */
+#if AF_DEBUG_LOG
+    esp_log_level_set("esp_ipa_af", ESP_LOG_DEBUG);
+#endif
+
+#if IMAGE_OUT_SD
+    if (sd_mount() != ESP_OK) {
+        return;
+    }
+#endif
+    if (esp_video_init(&cam_config) != ESP_OK) {
+        ESP_LOGE(TAG, "esp_video_init failed");
+        return;
+    }
+
+    int fd = open(CAM_DEV_PATH, O_RDONLY);
+    if (fd < 0) { ESP_LOGE(TAG, "open %s failed", CAM_DEV_PATH); return; }
+
+
+#if CAPTURE_MODE_INDEX >= 0
+    {
+        const esp_cam_sensor_format_t *want = imx708_format_by_index(CAPTURE_MODE_INDEX);
+        if (want == NULL) {
+            ESP_LOGE(TAG, "CAPTURE_MODE_INDEX %d is out of range - staying in the built-in mode",
+                     CAPTURE_MODE_INDEX);
+        } else if (!select_sensor_mode(fd, want)) {
+            ESP_LOGE(TAG, "could not select %s - staying in the built-in mode", want->name);
+        }
+    }
+#endif
+    capture_at_current_mode(fd, "imx708", AIM_SECONDS);
+
     close(fd);
     esp_video_deinit();
 #if IMAGE_OUT_SD
@@ -763,8 +872,8 @@ done:
     if (s_pwr_handle) { sd_pwr_ctrl_del_on_chip_ldo(s_pwr_handle); }
 #endif
 #if IMAGE_OUT_SD
-    ESP_LOGI(TAG, "==== done — remove the SD card and open %s on your PC ====", "imx708.bmp");
+    ESP_LOGI(TAG, "==== done ??? remove the SD card and open %s on your PC ====", "imx708.bmp");
 #else
-    ESP_LOGI(TAG, "==== done — frame(s) sent over serial, no card needed ====");
+    ESP_LOGI(TAG, "==== done ??? frame(s) sent over serial, no card needed ====");
 #endif
 }
