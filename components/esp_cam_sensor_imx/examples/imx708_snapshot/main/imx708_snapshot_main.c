@@ -98,7 +98,63 @@
  * reflashing, or restarting the whole video stack, until esp_video exposes a
  * way to re-init the pipeline.
  */
-#define CAPTURE_MODE_INDEX  (0)
+#define CAPTURE_MODE_INDEX  (-1)
+
+/*
+ * MODE_CYCLE: capture every mode in the driver's table in one run, largest to
+ * smallest, without rebooting between them.
+ *
+ * The point is comparability. Two modes captured in two runs differ by scene,
+ * exposure and lens position as much as by geometry, so a difference between
+ * them means nothing; five modes captured back to back off one tripod are
+ * directly comparable.
+ *
+ * It works by cycling the whole video stack per mode - esp_video_deinit() then
+ * esp_video_init() - rather than by switching modes underneath a running
+ * pipeline, which does not work: the ISP/IPA pipeline is built once from the
+ * geometry it sees at init and nothing re-reads it, so a switch after the first
+ * VIDIOC_STREAMON leaves AE, AWB and AF stranded on the old geometry and the
+ * frame comes back the right size and nearly black. esp_video_isp_pipeline_init()
+ * is not public, but esp_video_deinit()/esp_video_init() is the same thing from
+ * further out.
+ *
+ * Each cycle re-detects the sensor and the VCM and re-runs the full AF search
+ * from the lens's rest position, so every mode gets an independent convergence
+ * rather than inheriting the previous one's.
+ *
+ * A run needs roughly (AIM_SECONDS + transfer) per mode - measured at 36 s for
+ * all five, so give capture.py --seconds 200.
+ *
+ * Measured 2026-09-06, first try: all five modes captured, every CRC good, and
+ * free heap and free PSRAM byte-identical after every cycle (29773192 and
+ * 29357400), so the teardown gives everything back and the cycle can be run
+ * indefinitely. The DW9807 is re-detected and the lens re-parked at 512 each
+ * time, and AF re-converged to 646/641/641/641/636 - within one step of each
+ * other across five independent searches, which is what a working per-cycle
+ * pipeline looks like.
+ */
+#define MODE_CYCLE          0
+
+/*
+ * MODE_CONSOLE: pick the mode by typing a digit at the console, with the board
+ * already running - no rebuild, no reboot, no reflash.
+ *
+ * This is MODE_CYCLE driven by input instead of by a loop counter, and it is
+ * the point of the whole exercise: it demonstrates that the resolution is an
+ * application's choice at run time, not something baked in at build time. The
+ * `#define`s above are only there because nothing else fed the index in.
+ *
+ * Press 0..4 for a mode, or q to finish. There is no Enter: one keystroke is
+ * one command, so the prompt stays usable from a raw serial link.
+ *
+ * stdin is put in non-blocking mode and polled rather than installing the UART
+ * driver on the console port. That is deliberate. The console's TX side is the
+ * binary image channel (imx_serial_send_blob writes the payload with fwrite to
+ * stdout through the driverless VFS), and switching the console over to the
+ * driver would move that proven path onto different code for no benefit here.
+ * Reading only, and only between captures, leaves it exactly as it was.
+ */
+#define MODE_CONSOLE        1
 
 /*
  * FOCUS_SWEEP: calibration mode. Step the VCM across its whole electrical range
@@ -409,13 +465,26 @@ static esp_err_t serial_send_jpeg(const char *name, const uint8_t *rgb565, uint3
  * time from the capture pipeline entirely. PSRAM is 32 MB; one frame is cheap.
  */
 static uint8_t *s_stage = NULL;
+static size_t s_stage_len = 0;
 
 static const uint8_t *stage_frame(int fd, struct v4l2_buffer *buf, uint32_t w, uint32_t h,
                                   uint8_t **buffer)
 {
     size_t len = (size_t)w * h * 2;
-    if (!s_stage) {
+    /*
+     * Grow the staging buffer when a bigger frame turns up. It used to be
+     * allocated once, at whatever the first frame's size was, which was safe
+     * only for as long as a run could not raise its resolution: MODE_CYCLE
+     * walks the table largest to smallest, so the first allocation was always
+     * the biggest. MODE_CONSOLE broke that assumption the first time it was
+     * used - 640x480 then 1024x768 overran the buffer by 958464 bytes and the
+     * board panicked with an instruction fetch from 0x29282928, an address
+     * made of image bytes. Never size a reused buffer from the first caller.
+     */
+    if (s_stage_len < len) {
+        free(s_stage);
         s_stage = heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        s_stage_len = s_stage ? len : 0;
     }
     if (!s_stage) {
         ESP_LOGE(TAG, "no PSRAM for the staging frame; sending from the live buffer");
@@ -607,7 +676,7 @@ static void focus_sweep(int fd, int type, uint8_t **buffer, uint32_t w, uint32_t
 }
 #endif /* FOCUS_SWEEP */
 
-#if CAPTURE_MODE_INDEX >= 0
+#if CAPTURE_MODE_INDEX >= 0 || MODE_CYCLE || MODE_CONSOLE
 /*
  * Point the sensor at a different mode.
  *
@@ -637,7 +706,7 @@ static bool select_sensor_mode(int fd, const esp_cam_sensor_format_t *want)
     }
     return true;
 }
-#endif /* CAPTURE_MODE_INDEX >= 0 */
+#endif /* CAPTURE_MODE_INDEX >= 0 || MODE_CYCLE || MODE_CONSOLE */
 
 /*
  * One capture at whatever mode the sensor is currently in.
@@ -814,6 +883,123 @@ done:
     }
 }
 
+#if MODE_CYCLE || MODE_CONSOLE
+/*
+ * One capture in `want`, with a video stack built and torn down around it.
+ *
+ * The switch itself is the ordinary, always-legal one - it happens after
+ * esp_video_init() and before the first VIDIOC_STREAMON. What the deinit buys
+ * is a *second* such window, and a third: after a teardown the next init puts
+ * you back in front of STREAMON again, so the mode can be changed as often as
+ * you like without the sensor ever being re-programmed underneath a live
+ * pipeline (which strands AE, AWB and AF - see select_sensor_mode()).
+ *
+ * Returns false when the stack could not be brought up, which is a reason to
+ * stop rather than to try the next mode.
+ */
+static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
+{
+    ESP_LOGI(TAG, "==== mode %d: %s ====", index, want->name);
+
+    if (esp_video_init(&cam_config) != ESP_OK) {
+        ESP_LOGE(TAG, "esp_video_init failed on mode %d", index);
+        return false;
+    }
+
+    int fd = open(CAM_DEV_PATH, O_RDONLY);
+    if (fd < 0) {
+        ESP_LOGE(TAG, "open %s failed on mode %d", CAM_DEV_PATH, index);
+        esp_video_deinit();
+        return false;
+    }
+
+    if (!select_sensor_mode(fd, want)) {
+        ESP_LOGE(TAG, "could not select %s - skipping this mode", want->name);
+    } else {
+        /* Distinct names so each mode arrives as its own file. */
+        char name[32];
+        snprintf(name, sizeof(name), "imx708_%ux%u", want->width, want->height);
+        capture_at_current_mode(fd, name, AIM_SECONDS);
+    }
+
+    close(fd);
+    esp_video_deinit();
+    /*
+     * Watch for the stack not giving everything back. A cycle that leaks shows
+     * up here as a monotonic fall long before it shows up as a failed
+     * allocation, and PSRAM is where the frame buffers live.
+     */
+    ESP_LOGI(TAG, "after mode %d: free heap %" PRIu32 " B, free PSRAM %" PRIu32 " B",
+             index, (uint32_t)esp_get_free_heap_size(),
+             (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return true;
+}
+#endif /* MODE_CYCLE || MODE_CONSOLE */
+
+#if MODE_CONSOLE
+/*
+ * The prompt is a protocol, not decoration: tools/capture.py waits for it
+ * before sending the next queued keystroke, so a scripted run stays in step
+ * with a board that takes ~7 s per capture. Keep the two spellings together.
+ */
+#define MODE_PROMPT     "MODESEL> "
+
+static void mode_console_loop(void)
+{
+    /*
+     * Non-blocking, so the poll below can yield instead of parking the task
+     * inside a read. Without O_NONBLOCK the driverless console VFS spins in
+     * the read until a byte turns up, starving everything else.
+     */
+    int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (flags < 0 || fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK) < 0) {
+        ESP_LOGE(TAG, "could not put stdin in non-blocking mode - no console control");
+        return;
+    }
+
+    printf("\nType a digit to capture that mode, q to finish:\n");
+    for (int i = 0; ; i++) {
+        const esp_cam_sensor_format_t *f = imx708_format_by_index(i);
+        if (f == NULL) {
+            break;
+        }
+        printf("  %d  %ux%u\n", i, f->width, f->height);
+    }
+
+    for (;;) {
+        printf("%s", MODE_PROMPT);
+        fflush(stdout);
+
+        int index = -1;
+        while (index < 0) {
+            unsigned char c;
+            if (read(STDIN_FILENO, &c, 1) != 1) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
+            if (c == 'q' || c == 'Q') {
+                printf("\n");
+                return;
+            }
+            if (c >= '0' && c <= '9') {
+                index = c - '0';
+            }
+            /* Anything else - Enter, stray CR, line noise - is ignored. */
+        }
+        printf("%d\n", index);
+
+        const esp_cam_sensor_format_t *want = imx708_format_by_index(index);
+        if (want == NULL) {
+            ESP_LOGE(TAG, "no mode %d - the table ends before it", index);
+            continue;
+        }
+        if (!capture_mode_cycled(want, index)) {
+            return;
+        }
+    }
+}
+#endif /* MODE_CONSOLE */
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "IMX708 snapshot to SD");
@@ -843,6 +1029,24 @@ void app_main(void)
         return;
     }
 #endif
+#if MODE_CONSOLE
+    mode_console_loop();
+#elif MODE_CYCLE
+    /*
+     * imx708_format_by_index() returns NULL past the end of the table, so the
+     * loop follows however many modes the driver has rather than a count kept
+     * in step by hand here.
+     */
+    for (int i = 0; ; i++) {
+        const esp_cam_sensor_format_t *want = imx708_format_by_index(i);
+        if (want == NULL) {
+            break;
+        }
+        if (!capture_mode_cycled(want, i)) {
+            break;
+        }
+    }
+#else
     if (esp_video_init(&cam_config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed");
         return;
@@ -867,6 +1071,7 @@ void app_main(void)
 
     close(fd);
     esp_video_deinit();
+#endif /* MODE_CONSOLE / MODE_CYCLE */
 #if IMAGE_OUT_SD
     esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, s_card);
     if (s_pwr_handle) { sd_pwr_ctrl_del_on_chip_ldo(s_pwr_handle); }

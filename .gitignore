@@ -78,6 +78,12 @@ c6log*/
 /sweep*/
 /mode*/
 
+# MODE_CONSOLE runs: modes picked by hand (--interactive) or from a script
+# (--keys), so the output directory is named after the session rather than
+# after one data point.
+/console*/
+/manual/
+
 # tools/capture.py imports mp4.py, which leaves a bytecode cache next to it.
 __pycache__/
 
