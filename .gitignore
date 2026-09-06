@@ -80,9 +80,18 @@ c6log*/
 
 # MODE_CONSOLE runs: modes picked by hand (--interactive) or from a script
 # (--keys), so the output directory is named after the session rather than
-# after one data point.
+# after one data point. manual* rather than manual, because a session that
+# re-runs the same modes to compare against an earlier one suffixes the name
+# (manual_fixed/).
 /console*/
-/manual/
+/manual*/
+
+# Debugging sessions: a build with an instrument compiled in (a poison fill, a
+# cache probe) and the before/after captures that show whether a fix took.
+# Named after what was being tested rather than after a resolution or a mode,
+# so the patterns above do not reach them. Anchored like the rest.
+/*_probe*/
+/fix_*/
 
 # tools/capture.py imports mp4.py, which leaves a bytecode cache next to it.
 __pycache__/

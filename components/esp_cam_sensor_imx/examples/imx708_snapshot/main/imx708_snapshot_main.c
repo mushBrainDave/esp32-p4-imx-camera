@@ -259,6 +259,16 @@
  * clean and correctly placed, not by them reaching the frame edges.
  */
 
+/*
+ * These three were described in the comment above but never actually defined,
+ * so every `#if TEST_PATTERN` / `#if POISON_BUFFERS` below silently evaluated
+ * to 0: an undefined identifier is 0 in a preprocessor conditional, with no
+ * warning at default settings. The bring-up switches have been dead code.
+ */
+#define TEST_PATTERN        0
+#define POISON_BUFFERS      0
+#define POISON_BYTE         0xa5
+
 #define CAM_DEV_PATH        ESP_VIDEO_MIPI_CSI_DEVICE_NAME
 #define BUFFER_COUNT        2
 
@@ -746,6 +756,30 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
         struct v4l2_buffer b = { .type = type, .memory = V4L2_MEMORY_MMAP, .index = i };
         ioctl(fd, VIDIOC_QUERYBUF, &b);
         buffer[i] = mmap(NULL, b.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, b.m.offset);
+        /*
+         * Scrub this address range out of the cache before the sensor starts
+         * writing into it.
+         *
+         * These buffers are freed and reallocated on every mode change, so the
+         * range handed to us now was somebody else's heap a moment ago and may
+         * still have dirty lines sitting over it. A dirty line that is evicted
+         * after the capture DMA has written the same address puts the old
+         * contents back, and the frame comes out with cache-line-sized holes in
+         * it - which is what the random RGB block in the bottom-right corner of
+         * every capture was. The tail of the frame is the last thing the DMA
+         * writes, so it is the part most likely to still be shadowed when we
+         * read the buffer.
+         *
+         * The POISON_BUFFERS path below was doing this incidentally, via the
+         * writeback after its memset, which is why a poison build produced clean
+         * pictures and an ordinary one did not.
+         *
+         * Length is rounded down to whole cache lines: INVALIDATE on a partial
+         * line would discard a neighbour's dirty data, and esp_video allocates
+         * these buffers cache-aligned so only the tail can be partial.
+         */
+        ESP_ERROR_CHECK(esp_cache_msync(buffer[i], (b.length / 64) * 64,
+                                        ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE));
 #if POISON_BUFFERS
         buf_len[i] = b.length;
         /*
@@ -859,6 +893,42 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
         if (pct > 90) {
             ESP_LOGE(TAG, "the capture path wrote (almost) nothing - the BMP is stale memory, not a photo");
         }
+
+        /*
+         * Tail probe, for the random-RGB block that shows up in the bottom-right
+         * corner of the picture. Two candidate causes look identical from the
+         * host end, and this separates them:
+         *
+         *   the capture DMA never wrote the last bytes  -> they still read
+         *   POISON_BYTE both before and after an invalidate;
+         *
+         *   the DMA wrote them but we are reading a stale cache line  -> poison
+         *   before the invalidate, real pixels after it.
+         *
+         * So: measure the trailing poison run, invalidate, measure again. The
+         * frame is w*h*2; b.length may be padded beyond that, so probe from the
+         * end of the IMAGE, which is what actually reaches the encoder.
+         */
+        size_t flen = (size_t)w * h * 2;
+        uint32_t run_before = 0;
+        while (run_before < 4096 && p[flen - 1 - run_before] == POISON_BYTE) {
+            run_before++;
+        }
+        ESP_LOGI(TAG, "tail probe: %" PRIu32 " poison bytes at the end of the image, before invalidate",
+                 run_before);
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, p + flen - 32, 32, ESP_LOG_INFO);
+
+        /* M2C refuses ESP_CACHE_MSYNC_FLAG_UNALIGNED, so round to whole lines. */
+        size_t align = 64;   /* ESP32-P4 external-memory cache line */
+        size_t ilen = (n / align) * align;
+        esp_err_t ierr = esp_cache_msync(buffer[buf.index], ilen, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        uint32_t run_after = 0;
+        while (run_after < 4096 && p[flen - 1 - run_after] == POISON_BYTE) {
+            run_after++;
+        }
+        ESP_LOGI(TAG, "tail probe: invalidate(%u B, align %u) -> %s; %" PRIu32 " poison bytes after",
+                 (unsigned)ilen, (unsigned)align, esp_err_to_name(ierr), run_after);
+        ESP_LOG_BUFFER_HEX_LEVEL(TAG, p + flen - 32, 32, ESP_LOG_INFO);
     }
 #endif
     {
