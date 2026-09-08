@@ -54,12 +54,22 @@ window closes:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-**`capture.py`'s `--project` and `--out` are both relative to your current
-directory.** Standing in one example's directory and passing a repo-root-relative
-`--project` resolves to a path that does not exist; worse, `--out` quietly
-succeeds and drops the capture under whatever example you happened to be
-standing in. Either `cd` into the target example and omit `--project`, or pass
-absolute paths.
+**`capture.py --project` is relative to your current directory; `--out` is
+not.** Standing in one example's directory and passing a repo-root-relative
+`--project` resolves to a path that does not exist — so either `cd` into the
+target example and omit `--project`, or pass an absolute path.
+
+`--out` used to have the same trap, and quietly dropped captures under whichever
+example you happened to be standing in. It now names a directory under
+`<repo>/captures/` wherever you run from, which is the one place `.gitignore`
+already covers, and the resolved path is printed at startup:
+
+```bash
+--- writing to C:\Users\mushbrain\source\repos\imx708\captures\shot ---
+```
+
+An absolute `--out` is still used as given, for putting a capture somewhere
+else deliberately.
 
 **Is anything holding the serial port?** The port has exactly one owner, and a
 monitor left open in another terminal makes `esptool` fail with
@@ -290,6 +300,31 @@ grep -c "SOC_ISP_CROP_SUPPORTED" build/config/sdkconfig.h
 A `0` there means the crop is compiled out, and the 16-alignment has to be done
 at the sensor's readout window instead — which is what the driver's 1632x1232
 mode is for.
+
+**Resetting the ESP32-P4 does not reset the camera.** The Pi 15-pin CSI
+connector routes neither reset nor power-down to the host — both `CAM_RESET_PIN`
+and `CAM_PWDN_PIN` are `-1` in every example here — so a sensor register written
+by one firmware is still set for the next one. It is a real trap when reading a
+log: a boot that says nothing about a one-time register write has usually found
+the value already there, not skipped it by mistake.
+
+The IMX708's phase-detect correction gains are where this shows up. They are
+written once, guarded by a probe that reads 0x40 only while the bank is
+unprogrammed:
+
+```bash
+grep -a "PDAF" captures/<run>/log.txt
+```
+
+First boot after the module is plugged in:
+
+```
+imx708: PDAF gains applied: 0x40 -> 0x4c, 54 bytes per bank
+```
+
+Every boot after that, silence at INFO — the bank already reads 0x4c and the
+guard correctly skips. To see the write again, unplug the module; a reflash is
+not enough.
 
 ---
 
@@ -815,6 +850,50 @@ stays in step with a board that needs ~7 s per capture and never sends into the
 middle of a payload. `--interactive` echoes the console live and steps over the
 binary payloads by length, so the images still extract cleanly while you watch
 the log.
+
+**Flipping the sensor.** The same prompt takes `h` and `v` to toggle the
+mirror and the vertical flip, and `n` to clear both. A flip key changes state
+and reprints the prompt without capturing, so it still costs exactly one prompt
+and `--keys` stays in step. Flip first, then pick a mode:
+
+```bash
+python tools/capture.py --flash --keys "0,h,0,n,v,0,q" --seconds 240 --out flip_test
+```
+
+That lands three frames of one scene — unflipped, mirrored, inverted — named
+`imx708_1920x1080`, `..._h` and `..._v`.
+
+**A flip has to be applied before the format, not after.** esp_video latches
+the sensor's Bayer phase inside `update_format_config()`, which runs when the
+device is opened and again on `VIDIOC_S_SENSOR_FMT` — never at `VIDIOC_STREAMON`,
+and never when a control is set. Set a flip after the mode has been chosen and
+the sensor obeys while the ISP does not, which is a far worse picture than
+either on its own: red and blue swap and the greens zipper. The example applies
+flips between `open()` and `select_sensor_mode()` for exactly this reason.
+
+An example with no mode table to re-select — `imx219_snapshot` is one — reads
+the current format back and hands it straight in again, which looks like a
+no-op and is not:
+
+```c
+esp_cam_sensor_format_t cur = {0};
+ioctl(fd, VIDIOC_G_SENSOR_FMT, &cur);
+ioctl(fd, VIDIOC_S_SENSOR_FMT, &cur);   /* re-latches the Bayer phase */
+```
+
+`imx219_snapshot` has no console, so its flip is the build-time `FLIP_H` /
+`FLIP_V` pair at the top of the file; the frame is named after the state, so a
+set of builds lands as `imx219`, `imx219_h` and `imx219_v`.
+
+**How to tell a wrong phase from a right one without eyeballing it.** JPEG size
+is the cheapest signal: demosaicing on the wrong phase sprays incompressible
+chroma zippering over every pixel, and at q90 the same 1920x1080 scene went from
+327 KB to 918 KB. Then undo the flip in software and correlate against the
+unflipped frame per channel — with the phase right the matching channel wins
+(B-B 0.956 against B-R 0.723); with it wrong the frame's blue matches the
+baseline's *red* better than its own blue (0.914 against 0.768). On a
+near-neutral scene correlation gets weak, and mean per-pixel chroma is the
+better discriminator: it halved when the phase was wrong.
 
 **This found a real bug the first time it was used.** Capturing 640x480 and
 then 1024x768 - small then large, which no previous run had ever done - panicked
