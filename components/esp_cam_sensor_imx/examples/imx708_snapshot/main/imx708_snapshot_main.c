@@ -967,9 +967,47 @@ done:
  * Returns false when the stack could not be brought up, which is a reason to
  * stop rather than to try the next mode.
  */
+/*
+ * Flip state for the next capture, toggled from the console with h / v / n.
+ *
+ * Where this gets applied matters more than what it sets. esp_video latches the
+ * sensor's Bayer phase into its own CSI state inside update_format_config(),
+ * which runs when the device is opened and again on VIDIOC_S_SENSOR_FMT - never
+ * at VIDIOC_STREAMON, and never when a control is set. So a flip applied after
+ * the mode has been chosen reaches the sensor but not the ISP, and the frame
+ * comes back demosaiced on the unflipped phase: red and blue swapped, greens
+ * zippering. Applied between open() and select_sensor_mode(), as below, the
+ * S_SENSOR_FMT re-reads the phase and both agree.
+ *
+ * Each cycle re-detects the sensor, which clears 0x0101 in hardware, so this
+ * has to be re-applied per capture rather than once at start-up.
+ */
+static int s_hmirror = 0;
+static int s_vflip = 0;
+
+static bool flip_set_one(int fd, uint32_t id, int value)
+{
+    struct v4l2_ext_control c = { .id = id, .value = value };
+    struct v4l2_ext_controls cs = { .ctrl_class = V4L2_CTRL_CLASS_USER, .count = 1, .controls = &c };
+
+    if (ioctl(fd, VIDIOC_S_EXT_CTRLS, &cs) != 0) {
+        ESP_LOGE(TAG, "VIDIOC_S_EXT_CTRLS failed for id=0x%08" PRIx32 " value=%d", id, value);
+        return false;
+    }
+    return true;
+}
+
+static void apply_flip(int fd)
+{
+    bool ok = flip_set_one(fd, V4L2_CID_HFLIP, s_hmirror);
+    ok = flip_set_one(fd, V4L2_CID_VFLIP, s_vflip) && ok;
+    ESP_LOGI(TAG, "flip: hmirror=%d vflip=%d%s", s_hmirror, s_vflip, ok ? "" : " (FAILED)");
+}
+
 static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
 {
-    ESP_LOGI(TAG, "==== mode %d: %s ====", index, want->name);
+    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d) ====",
+             index, want->name, s_hmirror, s_vflip);
 
     if (esp_video_init(&cam_config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed on mode %d", index);
@@ -983,12 +1021,16 @@ static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
         return false;
     }
 
+    /* Before select_sensor_mode(), not after - see the comment on s_hmirror. */
+    apply_flip(fd);
+
     if (!select_sensor_mode(fd, want)) {
         ESP_LOGE(TAG, "could not select %s - skipping this mode", want->name);
     } else {
-        /* Distinct names so each mode arrives as its own file. */
-        char name[32];
-        snprintf(name, sizeof(name), "imx708_%ux%u", want->width, want->height);
+        /* Distinct names so each mode, and each flip state, is its own file. */
+        char name[48];
+        snprintf(name, sizeof(name), "imx708_%ux%u%s%s", want->width, want->height,
+                 s_hmirror ? "_h" : "", s_vflip ? "_v" : "");
         capture_at_current_mode(fd, name, AIM_SECONDS);
     }
 
@@ -1027,7 +1069,7 @@ static void mode_console_loop(void)
         return;
     }
 
-    printf("\nType a digit to capture that mode, q to finish:\n");
+    printf("\nType a digit to capture that mode, h/v to toggle flips, n to clear them, q to finish:\n");
     for (int i = 0; ; i++) {
         const esp_cam_sensor_format_t *f = imx708_format_by_index(i);
         if (f == NULL) {
@@ -1041,7 +1083,8 @@ static void mode_console_loop(void)
         fflush(stdout);
 
         int index = -1;
-        while (index < 0) {
+        bool flip_changed = false;
+        while (index < 0 && !flip_changed) {
             unsigned char c;
             if (read(STDIN_FILENO, &c, 1) != 1) {
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -1051,10 +1094,29 @@ static void mode_console_loop(void)
                 printf("\n");
                 return;
             }
-            if (c >= '0' && c <= '9') {
+            /*
+             * A flip key changes state and reprints the prompt without
+             * capturing, so it still costs exactly one prompt - which is what
+             * capture.py counts to stay in step. Flip, then pick a mode.
+             */
+            if (c == 'h' || c == 'H') {
+                s_hmirror = !s_hmirror;
+                flip_changed = true;
+            } else if (c == 'v' || c == 'V') {
+                s_vflip = !s_vflip;
+                flip_changed = true;
+            } else if (c == 'n' || c == 'N') {
+                s_hmirror = 0;
+                s_vflip = 0;
+                flip_changed = true;
+            } else if (c >= '0' && c <= '9') {
                 index = c - '0';
             }
             /* Anything else - Enter, stray CR, line noise - is ignored. */
+        }
+        if (flip_changed) {
+            printf("flip -> hmirror=%d vflip=%d\n", s_hmirror, s_vflip);
+            continue;
         }
         printf("%d\n", index);
 

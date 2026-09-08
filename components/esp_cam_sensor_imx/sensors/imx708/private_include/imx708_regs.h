@@ -25,6 +25,8 @@ extern "C" {
 /* Core control */
 #define IMX708_REG_MODE_SELECT      0x0100  /*!< 0=standby, 1=streaming */
 #define IMX708_REG_ORIENTATION      0x0101  /*!< bit0 = h flip, bit1 = v flip */
+#define IMX708_ORIENTATION_HMIRROR  0x01
+#define IMX708_ORIENTATION_VFLIP    0x02
 #define IMX708_REG_CSI_LANE_MODE    0x0114  /*!< 0x01 = 2 lane */
 
 /* V timing */

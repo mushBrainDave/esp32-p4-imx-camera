@@ -32,6 +32,8 @@
 #include "linux/videodev2.h"
 #include "esp_video_init.h"
 #include "esp_video_device.h"
+#include "esp_video_ioctl.h"
+#include "esp_cam_sensor_types.h"
 
 #include "driver/sdmmc_host.h"
 #include "esp_vfs_fat.h"
@@ -90,6 +92,24 @@
  */
 #define IMAGE_OUT_SERIAL    1
 #define IMAGE_OUT_SD        0
+
+/*
+ * Sensor flip for this build. 0/0 is the normal picture; set either to 1 to
+ * mirror or invert the readout. The frame is named after the state, so a set of
+ * builds lands as imx219, imx219_h, imx219_v and can be compared directly.
+ */
+#define FLIP_H              0
+#define FLIP_V              0
+
+#if FLIP_H && FLIP_V
+#define FLIP_SUFFIX         "_h_v"
+#elif FLIP_H
+#define FLIP_SUFFIX         "_h"
+#elif FLIP_V
+#define FLIP_SUFFIX         "_v"
+#else
+#define FLIP_SUFFIX         ""
+#endif
 
 #define JPEG_QUALITY        90
 
@@ -368,6 +388,48 @@ void app_main(void)
     int fd = open(CAM_DEV_PATH, O_RDONLY);
     if (fd < 0) { ESP_LOGE(TAG, "open %s failed", CAM_DEV_PATH); return; }
 
+    /*
+     * Flip the sensor, to check that the Bayer phase reported to the ISP
+     * follows it. Build-time rather than a console key because this example has
+     * no prompt: rebuild with FLIP_H / FLIP_V set and compare the frames.
+     *
+     * Applied here, straight after open() and before any format work. esp_video
+     * latches the sensor's Bayer phase inside update_format_config(), which runs
+     * at open and again on VIDIOC_S_SENSOR_FMT - never at STREAMON, and never
+     * when a control is set. A flip set after the format has been negotiated
+     * reaches the sensor but not the ISP, and the frame comes back demosaiced on
+     * the unflipped phase: red and blue swapped, greens zippering.
+     */
+    if (FLIP_H || FLIP_V) {
+        struct v4l2_ext_control c = { .id = V4L2_CID_HFLIP, .value = FLIP_H };
+        struct v4l2_ext_controls cs = { .ctrl_class = V4L2_CTRL_CLASS_USER, .count = 1, .controls = &c };
+        bool ok = (ioctl(fd, VIDIOC_S_EXT_CTRLS, &cs) == 0);
+        c.id = V4L2_CID_VFLIP;
+        c.value = FLIP_V;
+        ok = (ioctl(fd, VIDIOC_S_EXT_CTRLS, &cs) == 0) && ok;
+
+        /*
+         * Re-set the sensor format to the one already in force. It looks like a
+         * no-op and is not: VIDIOC_S_SENSOR_FMT is what makes esp_video re-run
+         * update_format_config() and pick up the Bayer phase the flip just
+         * changed. Without it the sensor is mirrored and the ISP is not, which
+         * is a much worse picture than either on its own.
+         *
+         * Unlike the IMX708 example there is no mode table to pick from here -
+         * this example never changes mode - so the current format is read back
+         * and handed straight back in.
+         */
+        esp_cam_sensor_format_t cur = {0};
+        if (ok && ioctl(fd, VIDIOC_G_SENSOR_FMT, &cur) == 0) {
+            ok = (ioctl(fd, VIDIOC_S_SENSOR_FMT, &cur) == 0);
+        } else {
+            ok = false;
+        }
+        ESP_LOGI(TAG, "flip: hmirror=%d vflip=%d%s", FLIP_H, FLIP_V, ok ? "" : " (FAILED)");
+    } else {
+        ESP_LOGI(TAG, "flip: hmirror=0 vflip=0");
+    }
+
     const int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     struct v4l2_format fmt = { .type = type };
     ioctl(fd, VIDIOC_G_FMT, &fmt);
@@ -522,7 +584,7 @@ void app_main(void)
     {
         const uint8_t *frame = stage_frame(fd, &buf, w, h, buffer);
 #if IMAGE_OUT_SERIAL
-        serial_send_jpeg("imx219", frame, w, h);
+        serial_send_jpeg("imx219" FLIP_SUFFIX, frame, w, h);
 #endif
 #if IMAGE_OUT_SD
         save_bmp565(OUT_PATH, frame, w, h);

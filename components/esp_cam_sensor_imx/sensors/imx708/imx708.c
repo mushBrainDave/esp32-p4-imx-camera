@@ -347,10 +347,52 @@ static const uint16_t imx708_ana_gain_code_map[] = {
      934,  939,  943,  948,  952,  956,  960,
 };
 
-/* Per-device state, so the ISP can read back what it last set. */
+/* ------------------------------------------------------------------ */
+/* Bayer phase                                                         */
+/* ------------------------------------------------------------------ */
+/*
+ * Bayer phase by flip state, indexed (vflip << 1) | hmirror.
+ *
+ * A flip does not mirror the picture behind a fixed colour mosaic. It reverses
+ * the order pixels leave the array in, so the 2x2 tile the ISP has to
+ * demosaic rotates with it. Report the wrong one and red and blue swap while
+ * the greens zipper - and nothing anywhere returns an error, the frame is
+ * simply wrong. Raspberry Pi's driver does the same thing by swapping the
+ * media-bus code across four entries.
+ *
+ * The unflipped phase is RGGB for every mode here because all of them are
+ * centred crops of one binned readout whose origin is a multiple of 4 in both
+ * axes. A future mode that moved the analog window by an odd number of binned
+ * pixels would start from a different phase and need its own base, so this is
+ * a property of the readout rather than of the sensor.
+ */
+static const esp_cam_sensor_bayer_pattern_t imx708_bayer_by_flip[4] = {
+    [0] = ESP_CAM_SENSOR_BAYER_RGGB,    /* no flip  */
+    [1] = ESP_CAM_SENSOR_BAYER_GRBG,    /* h mirror */
+    [2] = ESP_CAM_SENSOR_BAYER_GBRG,    /* v flip   */
+    [3] = ESP_CAM_SENSOR_BAYER_BGGR,    /* both     */
+};
+
+/*
+ * Per-device state.
+ *
+ * `format` and `isp_info` shadow whichever entry of imx708_format_info[] is in
+ * use, and dev->cur_format points at the shadow rather than into the table.
+ * That indirection is what lets bayer_type follow the flip bits: the static
+ * table is const and shared between every device, while esp_video reads
+ * bayer_type straight out of whatever cur_format points at. Every other field
+ * is a verbatim copy of the static entry.
+ *
+ * The shadow lives in the same allocation as the device (see imx708_detect),
+ * so it is valid for exactly as long as anything can hold a pointer to it.
+ */
 typedef struct {
     uint32_t exposure_val;      /*!< current exposure, in lines */
     uint32_t gain_index;        /*!< index into imx708_total_gain_val_map */
+    uint8_t  hmirror;           /*!< 0x0101 bit 0 */
+    uint8_t  vflip;             /*!< 0x0101 bit 1 */
+    esp_cam_sensor_format_t   format;
+    esp_cam_sensor_isp_info_t isp_info;
 } imx708_para_t;
 
 /* ------------------------------------------------------------------ */
@@ -392,19 +434,6 @@ static esp_err_t imx708_write_array(esp_sccb_io_handle_t sccb, const imx708_regi
     return ret;
 }
 
-static esp_err_t imx708_set_reg_bits(esp_sccb_io_handle_t sccb, uint16_t reg,
-                                     uint8_t offset, uint8_t length, uint8_t value)
-{
-    uint8_t reg_val = 0;
-    esp_err_t ret = imx708_read(sccb, reg, &reg_val);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    uint8_t mask = ((1 << length) - 1) << offset;
-    reg_val = (reg_val & ~mask) | ((value << offset) & mask);
-    return imx708_write(sccb, reg, reg_val);
-}
-
 /* ------------------------------------------------------------------ */
 /* Sensor operations                                                   */
 /* ------------------------------------------------------------------ */
@@ -439,15 +468,62 @@ static esp_err_t imx708_hw_reset(esp_cam_sensor_device_t *dev)
     return ESP_OK;
 }
 
-/* Orientation reg 0x0101: bit0 = h flip (mirror), bit1 = v flip. */
-static esp_err_t imx708_set_mirror(esp_cam_sensor_device_t *dev, int enable)
+/*
+ * Push the cached flip state to the sensor and to the shadow isp_info.
+ *
+ * Both bits are written together as a whole byte. The driver owns every bit of
+ * 0x0101, so there is nothing to preserve, and a read-modify-write per bit
+ * would leave the register momentarily holding a combination the caller never
+ * asked for.
+ *
+ * Note what the ISP does and does not see. esp_video latches bayer_type into
+ * its own CSI state inside update_format_config(), which runs at device open
+ * and again on VIDIOC_S_SENSOR_FMT - not at STREAMON, and not when a control
+ * is set. So the sensor obeys a flip immediately, while the ISP keeps
+ * demosaicing on the phase it latched. Set flips before opening the device or
+ * before the S_SENSOR_FMT that selects the mode; imx708_set_orientation()
+ * warns when it is too late for that.
+ */
+static esp_err_t imx708_apply_orientation(esp_cam_sensor_device_t *dev)
 {
-    return imx708_set_reg_bits(dev->sccb_handle, IMX708_REG_ORIENTATION, 0, 1, enable ? 1 : 0);
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+    uint8_t regval = 0;
+
+    if (para == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (para->hmirror) {
+        regval |= IMX708_ORIENTATION_HMIRROR;
+    }
+    if (para->vflip) {
+        regval |= IMX708_ORIENTATION_VFLIP;
+    }
+
+    esp_err_t ret = imx708_write(dev->sccb_handle, IMX708_REG_ORIENTATION, regval);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    para->isp_info.isp_v1_info.bayer_type =
+        imx708_bayer_by_flip[(para->vflip ? 2 : 0) | (para->hmirror ? 1 : 0)];
+    return ESP_OK;
 }
 
-static esp_err_t imx708_set_vflip(esp_cam_sensor_device_t *dev, int enable)
+static esp_err_t imx708_set_orientation(esp_cam_sensor_device_t *dev, int hmirror, int vflip)
 {
-    return imx708_set_reg_bits(dev->sccb_handle, IMX708_REG_ORIENTATION, 1, 1, enable ? 1 : 0);
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+
+    if (para == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    para->hmirror = hmirror ? 1 : 0;
+    para->vflip = vflip ? 1 : 0;
+
+    if (dev->stream_status) {
+        ESP_LOGW(TAG, "flip changed while streaming: the sensor obeys now, but the ISP keeps "
+                 "the Bayer phase it latched - re-set the sensor format to pick it up");
+    }
+    return imx708_apply_orientation(dev);
 }
 
 /*
@@ -596,6 +672,12 @@ static esp_err_t imx708_get_para_value(esp_cam_sensor_device_t *dev, uint32_t id
     case ESP_CAM_SENSOR_GAIN:
         *(uint32_t *)arg = para->gain_index;
         break;
+    case ESP_CAM_SENSOR_HMIRROR:
+        *(uint32_t *)arg = para->hmirror;
+        break;
+    case ESP_CAM_SENSOR_VFLIP:
+        *(uint32_t *)arg = para->vflip;
+        break;
     default:
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -606,12 +688,16 @@ static esp_err_t imx708_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id
 {
     esp_err_t ret = ESP_OK;
     switch (id) {
-    case ESP_CAM_SENSOR_VFLIP:
-        ret = imx708_set_vflip(dev, *(const int *)arg);
+    case ESP_CAM_SENSOR_VFLIP: {
+        const imx708_para_t *para = (const imx708_para_t *)dev->priv;
+        ret = imx708_set_orientation(dev, para ? para->hmirror : 0, *(const int *)arg);
         break;
-    case ESP_CAM_SENSOR_HMIRROR:
-        ret = imx708_set_mirror(dev, *(const int *)arg);
+    }
+    case ESP_CAM_SENSOR_HMIRROR: {
+        const imx708_para_t *para = (const imx708_para_t *)dev->priv;
+        ret = imx708_set_orientation(dev, *(const int *)arg, para ? para->vflip : 0);
         break;
+    }
     case ESP_CAM_SENSOR_EXPOSURE_VAL:
         ret = imx708_set_exposure(dev, *(const uint32_t *)arg);
         break;
@@ -674,6 +760,49 @@ static esp_err_t imx708_query_support_capability(esp_cam_sensor_device_t *dev, e
     return ESP_OK;
 }
 
+/*
+ * Point dev->cur_format at the per-device shadow of `format` rather than into
+ * imx708_format_info[], so that imx708_apply_orientation() has a bayer_type it
+ * is allowed to write. Callers hold this pointer indefinitely - esp_video
+ * caches it in its own device state - so the shadow has to outlive them, which
+ * it does by sitting in the device's own allocation.
+ *
+ * The static table stays the menu: imx708_format_by_index() and
+ * query_support_formats() still hand out entries from it, and those entries
+ * are still what a caller passes back in here.
+ */
+static esp_err_t imx708_select_format(esp_cam_sensor_device_t *dev, const esp_cam_sensor_format_t *format)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+
+    if (para == NULL) {
+        dev->cur_format = format;
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    para->format = *format;
+    if (format->isp_info) {
+        /*
+         * memcpy, not assignment: isp_v1_info.version is declared const, which
+         * makes the whole union non-assignable. The destination is inside the
+         * device's calloc'd block, so it has no declared type of its own and
+         * the copy is what gives it one.
+         *
+         * Skipped when the source is already the shadow. An application that
+         * reads the current format back with VIDIOC_G_SENSOR_FMT and hands it
+         * straight to VIDIOC_S_SENSOR_FMT - the way to make esp_video re-latch
+         * the Bayer phase after a flip - arrives here with isp_info pointing at
+         * the very object being written, and memcpy may not overlap.
+         */
+        if (format->isp_info != &para->isp_info) {
+            memcpy(&para->isp_info, format->isp_info, sizeof(para->isp_info));
+        }
+        para->format.isp_info = &para->isp_info;
+    }
+    dev->cur_format = &para->format;
+    return ESP_OK;
+}
+
 static esp_err_t imx708_set_format(esp_cam_sensor_device_t *dev, const esp_cam_sensor_format_t *format)
 {
     ESP_CAM_SENSOR_NULL_POINTER_CHECK(TAG, dev);
@@ -697,12 +826,21 @@ static esp_err_t imx708_set_format(esp_cam_sensor_device_t *dev, const esp_cam_s
     ret = imx708_write(dev->sccb_handle, IMX708_REG_LPF_INTENSITY_EN, IMX708_LPF_INTENSITY_DISABLED);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "disable quad-bayer LPF failed");
 
-    dev->cur_format = format;
-    if (dev->priv) {
-        imx708_para_t *para = (imx708_para_t *)dev->priv;
-        para->exposure_val = format->isp_info->isp_v1_info.exp_def;
-        para->gain_index = 0;                    /* mode table writes min gain */
-    }
+    ret = imx708_select_format(dev, format);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "no device state to shadow the format into");
+
+    /*
+     * The mode tables leave 0x0101 alone, but a hardware reset clears it and
+     * the shadow was just rebuilt from the const table, so its bayer_type is
+     * back to the unflipped phase. Re-assert both from the cached state.
+     */
+    ret = imx708_apply_orientation(dev);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "apply orientation failed");
+
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+    para->exposure_val = format->isp_info->isp_v1_info.exp_def;
+    para->gain_index = 0;                    /* mode table writes min gain */
+
     ESP_LOGI(TAG, "set format: %s", format->name);
     return ret;
 }
@@ -837,7 +975,9 @@ esp_cam_sensor_device_t *imx708_detect(esp_cam_sensor_config_t *config)
     dev->pwdn_pin = config->pwdn_pin;
     dev->sensor_port = config->sensor_port;
     dev->ops = &imx708_ops;
-    dev->cur_format = &imx708_format_info[IMX708_DEFAULT_FORMAT_INDEX];
+    /* Shadow the default mode straight away: esp_video reads bayer_type out of
+       cur_format at device open, which can happen without a set_format call. */
+    imx708_select_format(dev, &imx708_format_info[IMX708_DEFAULT_FORMAT_INDEX]);
 
     if (config->sensor_port != ESP_CAM_SENSOR_MIPI_CSI) {
         ESP_LOGE(TAG, "only MIPI-CSI is supported");

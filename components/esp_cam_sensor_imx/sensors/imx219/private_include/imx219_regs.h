@@ -74,6 +74,8 @@ extern "C" {
 #define IMX219_REG_X_ODD_INC       0x0170
 #define IMX219_REG_Y_ODD_INC       0x0171
 #define IMX219_REG_ORIENTATION     0x0172  /*!< bit0 = h flip, bit1 = v flip */
+#define IMX219_ORIENTATION_HMIRROR 0x01
+#define IMX219_ORIENTATION_VFLIP   0x02
 #define IMX219_REG_BINNING_MODE_H  0x0174
 #define IMX219_REG_BINNING_MODE_L  0x0175
 #define IMX219_BINNING_NONE        0x0000

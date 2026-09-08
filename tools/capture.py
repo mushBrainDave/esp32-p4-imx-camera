@@ -20,6 +20,11 @@ Run it from anywhere; it works out which project to flash:
 
     python tools/capture.py --seconds 400 --out sweep   # a FOCUS_SWEEP run
 
+Frames and logs are written to <repo>/captures/<--out>, wherever the script was
+run from. That directory is in .gitignore, so a debug capture never turns up as
+something to decide about committing. Pass an absolute --out to put them
+elsewhere.
+
     # imx708_video: 6 s aiming, 8 s recording, then a couple of MB to shift
     python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_video --out clip
 
@@ -158,6 +163,23 @@ def resolve_project(explicit):
     return default if is_project(default) else None
 
 
+def resolve_out(out):
+    """Where captured frames go: <repo>/captures/<out>, wherever this was run.
+
+    Relative to the repo rather than the CWD, so that the same --out means the
+    same directory whether the script was invoked from the root or from inside
+    an example - and so that output always lands in the one directory .gitignore
+    already covers. Debug captures are not deliverables and should never need a
+    decision about whether to commit them.
+
+    An absolute path is the escape hatch and is used unchanged.
+    """
+    if os.path.isabs(out):
+        return out
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(repo, 'captures', out)
+
+
 def rgb565_to_bmp(payload, w, h, path):
     """Expand RGB565 (LE) to a 24-bit BMP. BMP rows are stored bottom-up."""
     row_bytes = w * 3
@@ -269,7 +291,10 @@ def main():
                     help='ceiling on how long to listen. Capture stops as soon as the '
                          'board reports it is done, so this only matters when a run '
                          'never gets there; a sweep needs ~25 s per position.')
-    ap.add_argument('--out', default='capture')
+    ap.add_argument('--out', default='capture',
+                    help='output directory name, created under <repo>/captures/ '
+                         '(which .gitignore already covers). An absolute path is '
+                         'used as given.')
     ap.add_argument('--flash', action='store_true', help='run idf.py flash first')
     ap.add_argument('--project', default=None,
                     help='ESP-IDF project to flash. Defaults to the current directory '
@@ -308,7 +333,9 @@ def main():
         if r.returncode != 0:
             sys.exit('flash failed. Is a serial monitor still holding the port?')
 
+    args.out = resolve_out(args.out)
     os.makedirs(args.out, exist_ok=True)
+    print(f'--- writing to {args.out} ---')
 
     s = serial.Serial(args.port, args.baud, timeout=0.05)
     try:
