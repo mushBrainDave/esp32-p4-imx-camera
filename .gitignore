@@ -65,6 +65,7 @@ Desktop.ini
 # tools/capture.py writes received images and logs into its --out directory.
 # These are debug artefacts, not deliverables.
 capture/
+/captures
 shot/
 clip*/
 c6log*/
