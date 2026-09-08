@@ -351,15 +351,17 @@ static const uint16_t imx708_ana_gain_code_map[] = {
 /* Phase-detect pixel correction gains                                 */
 /* ------------------------------------------------------------------ */
 /*
- * Default SPC gain curve for the phase-detect sites, one row per bank: left
- * -shielded pixels first, then right-shielded. Nine values, repeated six times
- * to fill each 54-byte bank.
+ * Default SPC shading curve for the phase-detect sites, one row per bank: the
+ * left-shielded population first, then the right-shielded. Nine values, tiled
+ * six times to fill each 54-slot bank.
  *
- * The two rows are mirror images. A left-shielded site sees more light the
- * further right it sits in the pattern and less the further left, so its gain
- * falls from 0x4c to 0x35 across the period; the right-shielded bank runs the
- * other way. Applying the two rows to the wrong banks would therefore not
- * cancel out - it would roughly double the error it is meant to remove.
+ * The two rows are mirror images, and that is the whole point: the left bank
+ * falls from 0x4c to 0x35 across the period while the right rises, which
+ * cancels the position-dependent sensitivity difference between the two
+ * populations. Swapping the rows would not merely fail to correct, it would
+ * double the asymmetry - and since the sensor compares these two populations to
+ * measure defocus, the damage lands on autofocus rather than on the picture.
+ * See imx708_regs.h for why these are an AF input and not an image correction.
  *
  * Values are Sony's defaults, as carried by Raspberry Pi's driver.
  */
@@ -791,9 +793,9 @@ static esp_err_t imx708_query_support_capability(esp_cam_sensor_device_t *dev, e
  * carry real calibration from having it overwritten with defaults - so it has
  * to stay even if a written-once flag is ever added alongside it.
  *
- * Failure is not fatal to streaming. The sensor produces a picture either way,
- * with the phase-detect sites reading low, so this logs and returns rather than
- * refusing the mode.
+ * Failure is not fatal, and on this stack it costs nothing visible at all:
+ * these gains feed the sensor's on-chip phase computation, which nothing here
+ * reads yet. So this logs and returns rather than refusing the mode.
  */
 static void imx708_apply_pdaf_gains(esp_cam_sensor_device_t *dev)
 {

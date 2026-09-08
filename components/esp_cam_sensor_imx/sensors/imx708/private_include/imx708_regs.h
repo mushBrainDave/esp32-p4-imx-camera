@@ -99,24 +99,39 @@ extern "C" {
 #define IMX708_REG_DIG_CROP_H_L     0x040f
 
 /*
- * Phase-detect pixel correction gains (SPC = shading/pixel correction).
+ * Phase-detect shading gains (SPC), one bank for the left-shielded sites and
+ * one for the right-shielded ones.
  *
- * The IMX708 scatters phase-detect sites among its imaging pixels. They sit
- * under the same colour filter as their neighbours but behind a half-covered
- * microlens, so they collect less light and read low; the sensor corrects them
- * in-flight from two banks of 54 gains, one for the left-shielded sites and one
- * for the right-shielded ones. Uncorrected, those pixels stay dark and the ISP
- * demosaics around them.
+ * These feed the sensor's *autofocus* path, not the image. The IMX708 computes
+ * phase detection on-chip and emits only the result - a 16x12 grid of phase and
+ * confidence on the metadata line - so the host never sees the raw left and
+ * right pixel values. Anything that has to correct those values before the
+ * comparison must therefore be applied inside the sensor, which is what these
+ * banks are: they cancel the position-dependent sensitivity difference between
+ * the two shielded populations, so that the left-versus-right disparity the
+ * sensor measures means defocus rather than a shading mismatch.
+ *
+ * Two structural tells, if this ever needs re-deriving. The two default curves
+ * are *mirror images* - the left bank falls across the period while the right
+ * rises - which is what cancels an asymmetry, not what lifts pixels that read
+ * low; a correction aimed at the picture would boost both banks the same way.
+ * And each bank is 54 independent slots that the default merely tiles with a
+ * 9-value ramp, i.e. a shading profile, with a per-module calibration expected
+ * to fill all 54 with measured values.
+ *
+ * So on a stack that never reads the PDAF line - ours today - writing these
+ * changes nothing you can photograph. They are groundwork for phase-detect
+ * autofocus, and worth having in place because they are free, upstream does it,
+ * and a module shipping calibrated banks must not be trampled.
  *
  * IMX708_SPC_GAINS_UNSET is the value a bank holds at power-up, measured
  * 2026-09-07 on a Camera Module 3: cold, 0x7b10 reads 0x40. Raspberry Pi's
  * driver treats that as "nothing has programmed this bank" and installs its
  * default curve, and skips a bank reading anything else - the reading being
  * that a module carrying its own calibration should keep it, since per-unit
- * measured data beats any default and overwriting it would regress the image
- * with nothing to show for it. We have only ever seen 0x40 here, so the other
- * half of that behaviour is inherited rather than verified; keep the check
- * regardless, because getting it wrong is silent.
+ * measured data beats a tiled generic ramp. We have only ever seen 0x40 here,
+ * so the other half of that behaviour is inherited rather than verified; keep
+ * the check regardless, because getting it wrong is silent.
  *
  * Note the gains outlive a firmware reflash. The Pi CSI connector routes
  * neither reset nor power-down to the host, so resetting the ESP32-P4 does not
