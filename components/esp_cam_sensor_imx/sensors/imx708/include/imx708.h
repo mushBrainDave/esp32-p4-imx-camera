@@ -43,7 +43,9 @@ esp_cam_sensor_device_t *imx708_detect(esp_cam_sensor_config_t *config);
  * stream buffers, and the pixel format then has to be renegotiated with
  * VIDIOC_S_FMT.
  *
- * @return Mode count, currently 3.
+ * @return Mode count. Enumerate rather than assuming a number: modes are
+ *         appended over time, and the IMX708_FMT_* enum in imx708.c is what
+ *         says how many there are.
  */
 size_t imx708_format_count(void);
 
@@ -51,7 +53,13 @@ size_t imx708_format_count(void);
  * @brief Look a mode up by table index.
  *
  * Indices match CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT: 0 is 1920x1080,
- * 1 is 1280x720, 2 is 640x480, all RAW10 at 28 fps.
+ * 1 is 1280x720, 2 is 1024x768, 3 is 800x600, 4 is 640x480, all RAW10 at
+ * 28 fps.
+ *
+ * An index is part of the driver's interface, so modes are only ever appended
+ * to the IMX708_FMT_* enum in imx708.c, never inserted: a number written down
+ * against one release keeps meaning the same mode in the next. That enum is
+ * the authority if this list ever falls behind it.
  *
  * @param index Mode index, 0 .. imx708_format_count() - 1.
  * @return Pointer into the driver's static mode table, valid for the lifetime
