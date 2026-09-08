@@ -348,6 +348,27 @@ static const uint16_t imx708_ana_gain_code_map[] = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Phase-detect pixel correction gains                                 */
+/* ------------------------------------------------------------------ */
+/*
+ * Default SPC gain curve for the phase-detect sites, one row per bank: left
+ * -shielded pixels first, then right-shielded. Nine values, repeated six times
+ * to fill each 54-byte bank.
+ *
+ * The two rows are mirror images. A left-shielded site sees more light the
+ * further right it sits in the pattern and less the further left, so its gain
+ * falls from 0x4c to 0x35 across the period; the right-shielded bank runs the
+ * other way. Applying the two rows to the wrong banks would therefore not
+ * cancel out - it would roughly double the error it is meant to remove.
+ *
+ * Values are Sony's defaults, as carried by Raspberry Pi's driver.
+ */
+static const uint8_t imx708_pdaf_gains[2][IMX708_SPC_GAINS_PERIOD] = {
+    { 0x4c, 0x4c, 0x4c, 0x46, 0x3e, 0x38, 0x35, 0x35, 0x35 },   /* left  */
+    { 0x35, 0x35, 0x35, 0x38, 0x3e, 0x46, 0x4c, 0x4c, 0x4c },   /* right */
+};
+
+/* ------------------------------------------------------------------ */
 /* Bayer phase                                                         */
 /* ------------------------------------------------------------------ */
 /*
@@ -761,6 +782,60 @@ static esp_err_t imx708_query_support_capability(esp_cam_sensor_device_t *dev, e
 }
 
 /*
+ * Install the default phase-detect correction gains, if this module has none.
+ *
+ * Called after the common registers on every set_format, and a no-op on all but
+ * the first: the probe reads the left bank's first byte, which holds
+ * IMX708_SPC_GAINS_UNSET only until this writes over it. That check is a guard
+ * rather than an optimisation - it is also what stops a module whose OTP did
+ * carry real calibration from having it overwritten with defaults - so it has
+ * to stay even if a written-once flag is ever added alongside it.
+ *
+ * Failure is not fatal to streaming. The sensor produces a picture either way,
+ * with the phase-detect sites reading low, so this logs and returns rather than
+ * refusing the mode.
+ */
+static void imx708_apply_pdaf_gains(esp_cam_sensor_device_t *dev)
+{
+    static const uint16_t bank_base[2] = {
+        IMX708_REG_BASE_SPC_GAINS_L,
+        IMX708_REG_BASE_SPC_GAINS_R,
+    };
+    uint8_t probe = 0;
+
+    if (imx708_read(dev->sccb_handle, IMX708_REG_BASE_SPC_GAINS_L, &probe) != ESP_OK) {
+        ESP_LOGW(TAG, "could not read the PDAF gain bank - leaving it alone");
+        return;
+    }
+    if (probe != IMX708_SPC_GAINS_UNSET) {
+        ESP_LOGD(TAG, "PDAF gains already programmed (0x%02x), left as they are", probe);
+        return;
+    }
+
+    for (int b = 0; b < 2; b++) {
+        for (int i = 0; i < IMX708_SPC_GAINS_LEN; i++) {
+            uint8_t val = imx708_pdaf_gains[b][i % IMX708_SPC_GAINS_PERIOD];
+            if (imx708_write(dev->sccb_handle, bank_base[b] + i, val) != ESP_OK) {
+                ESP_LOGW(TAG, "PDAF gain write failed at bank %d offset %d", b, i);
+                return;
+            }
+        }
+    }
+
+    /*
+     * Read one byte back. 108 SCCB writes that silently went nowhere would look
+     * exactly like success otherwise, and this line is the only evidence in the
+     * log that the correction is actually in the sensor.
+     */
+    uint8_t check = 0;
+    if (imx708_read(dev->sccb_handle, IMX708_REG_BASE_SPC_GAINS_L, &check) == ESP_OK) {
+        ESP_LOGI(TAG, "PDAF gains applied: 0x%02x -> 0x%02x, %d bytes per bank",
+                 probe, check, IMX708_SPC_GAINS_LEN);
+    }
+
+}
+
+/*
  * Point dev->cur_format at the per-device shadow of `format` rather than into
  * imx708_format_info[], so that imx708_apply_orientation() has a bayer_type it
  * is allowed to write. Callers hold this pointer indefinitely - esp_video
@@ -817,6 +892,11 @@ static esp_err_t imx708_set_format(esp_cam_sensor_device_t *dev, const esp_cam_s
        to land after it or the mode's own PLL values fight it. */
     ret = imx708_write_array(dev->sccb_handle, imx708_common_regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write common regs failed");
+
+    /* After the common registers and before the mode, the order Raspberry Pi's
+       driver uses. The phase-detect banks are mode-independent. */
+    imx708_apply_pdaf_gains(dev);
+
     ret = imx708_write_array(dev->sccb_handle, (const imx708_reginfo_t *)format->regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write mode regs failed");
     ret = imx708_write_array(dev->sccb_handle, imx708_link_450mhz_regs);

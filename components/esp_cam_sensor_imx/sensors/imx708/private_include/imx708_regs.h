@@ -98,6 +98,38 @@ extern "C" {
 #define IMX708_REG_DIG_CROP_H_H     0x040e
 #define IMX708_REG_DIG_CROP_H_L     0x040f
 
+/*
+ * Phase-detect pixel correction gains (SPC = shading/pixel correction).
+ *
+ * The IMX708 scatters phase-detect sites among its imaging pixels. They sit
+ * under the same colour filter as their neighbours but behind a half-covered
+ * microlens, so they collect less light and read low; the sensor corrects them
+ * in-flight from two banks of 54 gains, one for the left-shielded sites and one
+ * for the right-shielded ones. Uncorrected, those pixels stay dark and the ISP
+ * demosaics around them.
+ *
+ * IMX708_SPC_GAINS_UNSET is the value a bank holds at power-up, measured
+ * 2026-09-07 on a Camera Module 3: cold, 0x7b10 reads 0x40. Raspberry Pi's
+ * driver treats that as "nothing has programmed this bank" and installs its
+ * default curve, and skips a bank reading anything else - the reading being
+ * that a module carrying its own calibration should keep it, since per-unit
+ * measured data beats any default and overwriting it would regress the image
+ * with nothing to show for it. We have only ever seen 0x40 here, so the other
+ * half of that behaviour is inherited rather than verified; keep the check
+ * regardless, because getting it wrong is silent.
+ *
+ * Note the gains outlive a firmware reflash. The Pi CSI connector routes
+ * neither reset nor power-down to the host, so resetting the ESP32-P4 does not
+ * reset the sensor: once written, the banks read 0x4c until the module loses
+ * power. A boot that logs nothing about PDAF gains has found them already
+ * there, which is correct and not a missed write.
+ */
+#define IMX708_REG_BASE_SPC_GAINS_L 0x7b10
+#define IMX708_REG_BASE_SPC_GAINS_R 0x7c00
+#define IMX708_SPC_GAINS_UNSET      0x40    /*!< reset value = never programmed */
+#define IMX708_SPC_GAINS_LEN        54      /*!< bytes per bank */
+#define IMX708_SPC_GAINS_PERIOD     9       /*!< the curve repeats every 9 */
+
 /* Quad-Bayer re-mosaic low-pass filter. Only the full-resolution mode
    re-mosaics, so binned modes must explicitly disable it. */
 #define IMX708_REG_LPF_INTENSITY_EN 0xc428
