@@ -29,7 +29,9 @@ stack per mode so each one gets a pipeline built for its own geometry:
   Press `0`–`4` to capture that mode, `q` to finish — no Enter, no rebuild, no
   reboot. This is the demonstration that resolution is an application's choice
   at run time; the `#define`s above exist only because nothing else fed the
-  index in.
+  index in. The same prompt also sets the flips (`h`, `v`, `n` to clear) and
+  the exposure (`-` and `+` for a stop either way, `a` back to auto), each one
+  keystroke, each applied to the next capture.
 - **`MODE_CYCLE`** walks the whole mode table off one boot, largest to
   smallest. Five frames of one scene at one lens position is the only honest
   way to compare modes — separate runs differ by exposure and framing as much
@@ -43,6 +45,39 @@ python tools/capture.py --flash --seconds 150 --keys "4,2,0,q" --out console_tes
 `--interactive` forwards your keystrokes and echoes the board back, stepping
 over the binary payloads so images still extract while you watch the log;
 `--keys` does the same from a script, one keystroke per prompt.
+
+### Exposure bias
+
+`-` and `+` move the exposure one stop from whatever AE settles on; `a` hands
+it back to AE. The bias is relative on purpose — "two stops under what the
+meter said" means the same thing in two different rooms, and an absolute line
+count does not.
+
+It is for the frame that gets measured rather than looked at. A clipped
+highlight has no colour left in it, so a question about how the pipeline renders
+highlights can only be answered on a frame where nothing clipped, and AE will
+not hand you one. The bias goes into the file name (`imx708_1920x1080_ev-2.jpg`),
+so a ladder does not overwrite itself:
+
+```bash
+# auto, then -2, -4 and -6 stops, one scene, one lens position
+python tools/capture.py --flash --seconds 250 --keys "0,d,d,0,d,d,0,d,d,0,q" --out evsweep
+```
+
+`d` and `b` are aliases for `-` and `+`, because argparse reads a `--keys`
+value beginning with a dash as the next option.
+
+The log reports what the sensor actually took, read back rather than echoed:
+
+```
+exposure bias -4 stop: AE had 2494 lines @ 16.000x, now 2220 lines @ 1.123x
+```
+
+Gain falls to its floor before integration time shortens — the rule is the
+lowest gain whose exposure still fits inside the mode's frame — so a
+deliberately dark frame is also the least noisy one available at that light.
+A bias the hardware cannot reach is clamped and says so, naming the range that
+ran out.
 
 **Copy-pasteable commands for each mode** are in
 [`docs/cli-cookbook.md`](../../../../docs/cli-cookbook.md#resolution-modes),

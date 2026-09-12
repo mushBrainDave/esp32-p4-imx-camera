@@ -305,7 +305,10 @@ def main():
                     help='drive a MODE_CONSOLE build without typing: a sequence like '
                          '"4,2,q" sent one keystroke per prompt. The board takes ~7 s '
                          'per capture, so the send waits for the prompt rather than '
-                         'guessing at delays.')
+                         'guessing at delays. Digits capture a mode; h/v/n set the '
+                         'flips; d and b step the exposure a stop darker or brighter '
+                         'than AE and a returns it to auto (they alias - and +, which '
+                         'argparse would read as an option here).')
     ap.add_argument('--interactive', action='store_true',
                     help='forward your keystrokes to a MODE_CONSOLE build and echo the '
                          'board back, so modes can be picked by hand while it runs.')
