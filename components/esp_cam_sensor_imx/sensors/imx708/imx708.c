@@ -75,6 +75,27 @@ enum {
 };
 
 /*
+ * Per-mode AE limits, reached through esp_cam_sensor_format_t::reserved, which
+ * the framework documents as the place to hang AE/AF/AWB information and which
+ * nothing in it reads. isp_info would have been the obvious home, but its
+ * layout is the framework's and has no field for either of these.
+ *
+ * Every mode shipped today is a crop of the same 2x2-binned readout and so
+ * shares one pair of numbers; the indirection is what stops the eventual
+ * full-resolution mode (8/1, see IMX708_EXPOSURE_LINES_MIN_FULL) from silently
+ * inheriting the binned pair.
+ */
+typedef struct {
+    uint32_t exposure_lines_min;    /*!< shortest integration the mode honours */
+    uint32_t exposure_lines_step;   /*!< granularity above that; longer requests round down */
+} imx708_mode_ae_t;
+
+static const imx708_mode_ae_t imx708_binned_ae = {
+    .exposure_lines_min  = IMX708_EXPOSURE_LINES_MIN_BINNED,
+    .exposure_lines_step = IMX708_EXPOSURE_LINES_STEP_BINNED,
+};
+
+/*
  * One entry per mode even though all three are currently identical: every mode
  * is a digital crop of the same binned readout, so line and frame timing - and
  * with them the frame rate and the whole exposure range - do not move. Keeping
@@ -163,7 +184,7 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
             .lane_num = 2,
             .line_sync_en = IMX708_LINESYNC_ENABLE,
         },
-        .reserved = NULL,
+        .reserved = (void *)&imx708_binned_ae,
     },
     [IMX708_FMT_1280x720_RAW10_28FPS] = {
         /* A centred crop of the same readout: 44% of the pixels, 56% of the
@@ -184,7 +205,7 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
             .lane_num = 2,
             .line_sync_en = IMX708_LINESYNC_ENABLE,
         },
-        .reserved = NULL,
+        .reserved = (void *)&imx708_binned_ae,
     },
     [IMX708_FMT_1024x768_RAW10_28FPS] = {
         /* 4:3, and the only mode whose width and height are both whole H.264
@@ -205,7 +226,7 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
             .lane_num = 2,
             .line_sync_en = IMX708_LINESYNC_ENABLE,
         },
-        .reserved = NULL,
+        .reserved = (void *)&imx708_binned_ae,
     },
     [IMX708_FMT_800x600_RAW10_28FPS] = {
         /* SVGA, the middle 4:3 step. 800 is 50 whole macroblocks; 600 is 37.5,
@@ -227,7 +248,7 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
             .lane_num = 2,
             .line_sync_en = IMX708_LINESYNC_ENABLE,
         },
-        .reserved = NULL,
+        .reserved = (void *)&imx708_binned_ae,
     },
     [IMX708_FMT_640x480_RAW10_28FPS] = {
         /* 15% of the pixels, and a much tighter window - 28% of the field
@@ -248,7 +269,7 @@ static const esp_cam_sensor_format_t imx708_format_info[] = {
             .lane_num = 2,
             .line_sync_en = IMX708_LINESYNC_ENABLE,
         },
-        .reserved = NULL,
+        .reserved = (void *)&imx708_binned_ae,
     },
 };
 
@@ -550,6 +571,18 @@ static esp_err_t imx708_set_orientation(esp_cam_sensor_device_t *dev, int hmirro
 }
 
 /*
+ * The current mode's AE limits, or the binned pair if the format has not been
+ * selected yet. Never NULL, so callers do not have to branch.
+ */
+static const imx708_mode_ae_t *imx708_mode_ae(esp_cam_sensor_device_t *dev)
+{
+    if (dev && dev->cur_format && dev->cur_format->reserved) {
+        return (const imx708_mode_ae_t *)dev->cur_format->reserved;
+    }
+    return &imx708_binned_ae;
+}
+
+/*
  * Exposure ceiling. Integration time cannot exceed frame_length - 48 lines,
  * and frame_length is a per-mode value carried in isp_info, not a constant of
  * the sensor. Every mode shipped today is a crop of one readout and so shares
@@ -559,29 +592,51 @@ static esp_err_t imx708_set_orientation(esp_cam_sensor_device_t *dev, int hmirro
  */
 static uint32_t imx708_exposure_max(esp_cam_sensor_device_t *dev)
 {
+    const imx708_mode_ae_t *ae = imx708_mode_ae(dev);
     uint32_t vts = IMX708_VTS;
 
     if (dev && dev->cur_format && dev->cur_format->isp_info) {
         vts = dev->cur_format->isp_info->isp_v1_info.vts;
     }
-    if (vts <= IMX708_EXPOSURE_OFFSET + IMX708_EXPOSURE_MIN) {
-        return IMX708_EXPOSURE_MIN;
+    if (vts <= IMX708_EXPOSURE_OFFSET + ae->exposure_lines_min) {
+        return ae->exposure_lines_min;
     }
-    return vts - IMX708_EXPOSURE_OFFSET;
+    /* Down to the step grid, so that every value in [min, max] is reachable
+       and the ceiling itself is one the sensor will not quietly round away. */
+    return (vts - IMX708_EXPOSURE_OFFSET) - ((vts - IMX708_EXPOSURE_OFFSET) % ae->exposure_lines_step);
+}
+
+/*
+ * Clamp to the mode's range and then onto its step grid, the order Raspberry
+ * Pi's driver uses. Rounding down after the ceiling keeps the result legal;
+ * rounding down cannot fall below the floor because every min the sensor
+ * defines is a whole number of steps.
+ */
+static uint32_t imx708_quantize_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
+{
+    const imx708_mode_ae_t *ae = imx708_mode_ae(dev);
+    uint32_t max = imx708_exposure_max(dev);
+
+    if (lines < ae->exposure_lines_min) {
+        lines = ae->exposure_lines_min;
+    }
+    if (lines > max) {
+        lines = max;
+    }
+    return lines - (lines % ae->exposure_lines_step);
 }
 
 /* Exposure in lines (16-bit reg 0x0202). */
 static esp_err_t imx708_set_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
 {
-    uint32_t max = imx708_exposure_max(dev);
-    if (lines < IMX708_EXPOSURE_MIN) {
-        lines = IMX708_EXPOSURE_MIN;
-    }
-    if (lines > max) {
-        lines = max;
-    }
+    lines = imx708_quantize_exposure(dev, lines);
+
     esp_err_t ret = imx708_write16(dev->sccb_handle, IMX708_REG_EXPOSURE_H, (uint16_t)lines);
     if (ret == ESP_OK && dev->priv) {
+        /* The quantized value, not the requested one: a caller that reads back
+           what it just set has to see what the sensor is actually doing, or
+           the dead zone this whole function exists to remove reappears one
+           level up. */
         ((imx708_para_t *)dev->priv)->exposure_val = lines;
     }
     return ret;
@@ -644,11 +699,14 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
         qdesc->default_value = 0;
         break;
     case ESP_CAM_SENSOR_EXPOSURE_VAL:
+        /* Advertising the mode's real granularity is the point of the control:
+           an AE loop that walks this range in steps of 1 spends half its
+           requests on values the sensor rounds back to the previous one. */
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
-        qdesc->number.minimum = IMX708_EXPOSURE_MIN;
+        qdesc->number.minimum = imx708_mode_ae(dev)->exposure_lines_min;
         qdesc->number.maximum = imx708_exposure_max(dev);
-        qdesc->number.step = 1;
-        qdesc->default_value = 1288;
+        qdesc->number.step = imx708_mode_ae(dev)->exposure_lines_step;
+        qdesc->default_value = imx708_quantize_exposure(dev, 1288);
         break;
     case ESP_CAM_SENSOR_GAIN:
         /* Menu control: elements are total gain in milli-units, and the value

@@ -38,8 +38,26 @@ extern "C" {
 #define IMX708_REG_EXPOSURE_H       0x0202
 #define IMX708_REG_EXPOSURE_L       0x0203
 #define IMX708_EXPOSURE_OFFSET      48
-#define IMX708_EXPOSURE_MIN         1
 #define IMX708_EXPOSURE_DEFAULT     0x0640
+
+/*
+ * Exposure quantization, which is a property of the readout mode and not of
+ * the sensor. The IMX708 integrates over whole line pairs when it is binning
+ * two rows together, so a binned mode accepts only even line counts of 4 or
+ * more; a full-resolution mode reads every row and takes any count of 8 or
+ * more. The sensor does not reject an illegal value, it rounds it - which is
+ * why this matters to a control loop and not just to correctness: AE asks for
+ * 1001 lines, gets 1000, measures no change from its last request of 1000,
+ * and reads that dead zone as the scene rather than as its own rounding.
+ *
+ * Values are Raspberry Pi's, from the per-mode exposure_lines_min /
+ * exposure_lines_step in references/linux/imx708.c. Only the binned pair is
+ * used today; the full-resolution pair is here so the numbers stay together.
+ */
+#define IMX708_EXPOSURE_LINES_MIN_BINNED    4
+#define IMX708_EXPOSURE_LINES_STEP_BINNED   2
+#define IMX708_EXPOSURE_LINES_MIN_FULL      8
+#define IMX708_EXPOSURE_LINES_STEP_FULL     1
 #define IMX708_REG_ANALOG_GAIN_H    0x0204
 #define IMX708_REG_ANALOG_GAIN_L    0x0205
 #define IMX708_ANA_GAIN_MIN         112     /*!< gain = 1024/(1024-code) */
