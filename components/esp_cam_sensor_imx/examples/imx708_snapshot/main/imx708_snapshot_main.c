@@ -26,6 +26,7 @@
 #include "esp_video_init.h"
 #include "esp_video_device.h"
 #include "esp_video_ioctl.h"
+#include "esp_video_isp_pipeline.h"
 #include "imx708.h"
 
 #include "driver/sdmmc_host.h"
@@ -146,6 +147,12 @@
  *
  * Press 0..4 for a mode, or q to finish. There is no Enter: one keystroke is
  * one command, so the prompt stays usable from a raw serial link.
+ *
+ * h / v / n set the flips and - / + / a the exposure bias (see s_ev_bias), and
+ * both take effect on the next capture rather than immediately. The same
+ * argument applies to them as to the resolution: they are the application's to
+ * choose at run time, and a rebuild to answer "what does this look like a stop
+ * darker" is a rebuild that does not get done.
  *
  * stdin is put in non-blocking mode and polled rather than installing the UART
  * driver on the console port. That is deliberate. The console's TX side is the
@@ -618,7 +625,6 @@ static uint32_t centre_sharpness(const uint8_t *rgb565, uint32_t w, uint32_t h)
  * flight when the DAC was written, so the first buffers back still show the old
  * position. Returns false if the stream stalled.
  */
-#if FOCUS_SWEEP
 static bool grab_frame(int fd, int type, int settle, struct v4l2_buffer *out)
 {
     for (int i = 0; i <= settle; i++) {
@@ -633,7 +639,6 @@ static bool grab_frame(int fd, int type, int settle, struct v4l2_buffer *out)
     }
     return true;
 }
-#endif /* FOCUS_SWEEP */
 
 #if FOCUS_SWEEP
 /*
@@ -685,6 +690,221 @@ static void focus_sweep(int fd, int type, uint8_t **buffer, uint32_t w, uint32_t
                   "'detected DW9807 VCM' appeared at start-up.");
 }
 #endif /* FOCUS_SWEEP */
+
+/* ---- Exposure override -------------------------------------------------- */
+
+/*
+ * Exposure bias in stops, relative to whatever AE settles on. Zero leaves AE
+ * in charge, costs not one extra ioctl, and is the default; the console's
+ * - and + keys move it and a resets it.
+ *
+ * Anchoring to AE's own answer rather than to an absolute number of lines is
+ * what makes the setting mean the same thing twice. "Two stops under what the
+ * meter said" is comparable between two rooms; "640 lines" is not, and a
+ * number that has to be re-guessed per scene is a number nobody uses.
+ *
+ * What it is for is the frame that gets measured rather than looked at. A
+ * clipped highlight has no colour left in it - all three channels are pinned
+ * at the top and whatever the pipeline did to them on the way is no longer
+ * visible - so a question about highlight rendering can only be answered on a
+ * frame where nothing clipped, and AE will not hand you one, because not
+ * clipping is not what AE is for.
+ */
+static int s_ev_bias = 0;
+
+#define EV_BIAS_MIN         (-6)
+#define EV_BIAS_MAX         3
+/*
+ * Frames to discard after the exposure changes. The sensor already had frames
+ * in flight when the register was written and the pipeline is a couple deeper
+ * than that, so the first buffers back still carry the old exposure. Same
+ * reasoning as FOCUS_SETTLE_FRAMES, a different actuator.
+ */
+#define EV_SETTLE_FRAMES    4
+
+/*
+ * Exposure and gain are USER-class controls, unlike focus, which is
+ * CAMERA-class. Getting the class wrong is not an error - it is a lookup that
+ * quietly finds nothing.
+ */
+static bool ctrl_get_user(int fd, uint32_t id, int32_t *out)
+{
+    struct v4l2_ext_control c = { .id = id };
+    struct v4l2_ext_controls cs = { .ctrl_class = V4L2_CTRL_CLASS_USER, .count = 1, .controls = &c };
+
+    if (ioctl(fd, VIDIOC_G_EXT_CTRLS, &cs) != 0) {
+        return false;
+    }
+    *out = c.value;
+    return true;
+}
+
+static bool ctrl_set_user(int fd, uint32_t id, int32_t value)
+{
+    struct v4l2_ext_control c = { .id = id, .value = value };
+    struct v4l2_ext_controls cs = { .ctrl_class = V4L2_CTRL_CLASS_USER, .count = 1, .controls = &c };
+
+    return ioctl(fd, VIDIOC_S_EXT_CTRLS, &cs) == 0;
+}
+
+/*
+ * Total gain of gain-menu entry `index`, in milli-units (1000 = 1.00x), or 0.
+ *
+ * Gain is a menu control, not a number: V4L2_CID_GAIN carries an index, and
+ * the gain it stands for has to be looked up. That is the sensor driver's
+ * choice and a deliberate one - esp_video's AE binary-searches this menu - so
+ * an application that wants to reason about gain in stops has to read it.
+ */
+static uint32_t gain_menu_value(int fd, uint32_t index)
+{
+    struct v4l2_querymenu qm = { .id = V4L2_CID_GAIN, .index = index };
+
+    return ioctl(fd, VIDIOC_QUERYMENU, &qm) == 0 ? (uint32_t)qm.value : 0;
+}
+
+/*
+ * Re-expose the running stream s_ev_bias stops away from what AE decided, with
+ * AE switched off so it cannot walk back, and leave a fresh frame in *buf.
+ *
+ * How the change is split between integration time and gain is a policy, not
+ * an accident of which control gets written first: take the *lowest gain whose
+ * resulting exposure still fits inside the mode's frame*. Read in the
+ * darkening direction that drives gain down to its floor and lets integration
+ * time carry the reduction, which is what a frame that is going to be measured
+ * wants - less gain is less noise. Read in the brightening direction the same
+ * rule lengthens the exposure first and only reaches for gain once the frame
+ * is as long as the mode allows. One rule, and it is the right one both ways.
+ *
+ * Gain and exposure are written separately rather than through the sensor's
+ * group-hold control, because every frame between the two writes is discarded
+ * below anyway - a torn frame here cannot reach the output.
+ *
+ * Returns false only if the stream stalled. A bias the hardware cannot reach
+ * is clamped and *said so*, because an exposure that is not quite what was
+ * asked for and reports itself beats a capture that did not happen.
+ */
+static bool apply_exposure_bias(int fd, int type, struct v4l2_buffer *buf)
+{
+    int32_t exp_auto = 0, gain_auto = 0;
+    struct v4l2_query_ext_ctrl q_exp = { .id = V4L2_CID_EXPOSURE };
+    struct v4l2_query_ext_ctrl q_gain = { .id = V4L2_CID_GAIN };
+
+    if (!ctrl_get_user(fd, V4L2_CID_EXPOSURE, &exp_auto) ||
+        !ctrl_get_user(fd, V4L2_CID_GAIN, &gain_auto)) {
+        ESP_LOGE(TAG, "could not read back what AE settled on - keeping its exposure");
+        return true;
+    }
+    if (ioctl(fd, VIDIOC_QUERY_EXT_CTRL, &q_exp) != 0 ||
+        ioctl(fd, VIDIOC_QUERY_EXT_CTRL, &q_gain) != 0) {
+        ESP_LOGE(TAG, "exposure/gain ranges unreadable - keeping AE's exposure");
+        return true;
+    }
+
+    uint32_t gain_milli = gain_menu_value(fd, (uint32_t)gain_auto);
+    if (gain_milli == 0) {
+        ESP_LOGE(TAG, "gain menu entry %" PRId32 " has no value - keeping AE's exposure", gain_auto);
+        return true;
+    }
+
+    /*
+     * The light AE chose, and the light we want, in milli-unit-lines. 64-bit
+     * because the product is already around 30 bits before the bias shifts it.
+     */
+    uint64_t had = (uint64_t)exp_auto * gain_milli;
+    uint64_t want = s_ev_bias < 0 ? (had >> -s_ev_bias) : (had << s_ev_bias);
+
+    uint32_t gain_idx = 0;
+    uint64_t lines = 0;
+    for (;;) {
+        uint32_t g = gain_menu_value(fd, gain_idx);
+        if (g == 0) {
+            /* Menu shorter than QUERY_EXT_CTRL claimed; back up to a real entry. */
+            gain_idx = gain_idx ? gain_idx - 1 : 0;
+            g = gain_menu_value(fd, gain_idx);
+            lines = g ? (want + g / 2) / g : (uint64_t)exp_auto;
+            break;
+        }
+        lines = (want + g / 2) / g;
+        if (lines <= (uint64_t)q_exp.maximum || gain_idx >= (uint32_t)q_gain.maximum) {
+            break;
+        }
+        gain_idx++;
+    }
+    /*
+     * Onto the step grid before the range check, not after: esp_video rejects
+     * an off-grid value outright - `value % step` in esp_video_cam.c, so the
+     * grid is multiples of step and has nothing to do with the minimum - and a
+     * rejected write leaves the exposure wherever AE left it. Asking for 2221
+     * lines on a step of 2 cost a whole capture here before this existed, and
+     * the only reason it was noticed is that the read-back below disagreed
+     * with the request.
+     */
+    if (q_exp.step > 1) {
+        lines -= lines % (uint64_t)q_exp.step;
+    }
+    if (lines < (uint64_t)q_exp.minimum) {
+        lines = (uint64_t)q_exp.minimum;
+    }
+    if (lines > (uint64_t)q_exp.maximum) {
+        lines = (uint64_t)q_exp.maximum - ((uint64_t)q_exp.maximum % (q_exp.step ? (uint64_t)q_exp.step : 1));
+    }
+
+#if CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER
+    esp_err_t agc = esp_video_isp_pipeline_set_agc_status(ESP_VIDEO_ISP_PIPELINE_AGC_DISABLE);
+    if (agc != ESP_OK) {
+        ESP_LOGW(TAG, "could not switch AE off (%s) - it may walk the exposure back",
+                 esp_err_to_name(agc));
+    }
+#else
+    ESP_LOGW(TAG, "no ISP pipeline controller in this build - AE cannot be switched off "
+                  "and will undo the override");
+#endif
+
+    if (!ctrl_set_user(fd, V4L2_CID_GAIN, (int32_t)gain_idx)) {
+        ESP_LOGW(TAG, "setting gain index %" PRIu32 " failed", gain_idx);
+    }
+    if (!ctrl_set_user(fd, V4L2_CID_EXPOSURE, (int32_t)lines)) {
+        ESP_LOGW(TAG, "setting exposure %" PRIu64 " lines failed", lines);
+    }
+
+    /* Requeue the frame AE gave us; it was exposed under the old settings. */
+    ioctl(fd, VIDIOC_QBUF, buf);
+    if (!grab_frame(fd, type, EV_SETTLE_FRAMES, buf)) {
+        return false;
+    }
+
+    /*
+     * Read back rather than reporting what was asked for. The sensor quantizes
+     * exposure onto a per-mode step grid, so the value in force is routinely
+     * not the value requested, and a log that prints the request is a log that
+     * cannot be used to check anything.
+     */
+    int32_t exp_now = exp_auto, gain_now = (int32_t)gain_idx;
+    ctrl_get_user(fd, V4L2_CID_EXPOSURE, &exp_now);
+    ctrl_get_user(fd, V4L2_CID_GAIN, &gain_now);
+    uint32_t now_milli = gain_menu_value(fd, (uint32_t)gain_now);
+    if (now_milli == 0) {
+        now_milli = gain_milli;
+    }
+
+    ESP_LOGI(TAG, "exposure bias %+d stop: AE had %" PRId32 " lines @ %" PRIu32 ".%03" PRIu32
+             "x, now %" PRId32 " lines @ %" PRIu32 ".%03" PRIu32 "x",
+             s_ev_bias, exp_auto, gain_milli / 1000, gain_milli % 1000,
+             exp_now, now_milli / 1000, now_milli % 1000);
+
+    /*
+     * Did the hardware actually get there? Within 5% is a quantization step;
+     * further off means a range ran out, and which range is the useful part.
+     */
+    uint64_t got = (uint64_t)exp_now * now_milli;
+    if (want == 0 || got * 100 < want * 95 || got * 100 > want * 105) {
+        ESP_LOGW(TAG, "  clamped: wanted %" PRIu64 " milli-unit-lines of light, got %" PRIu64
+                 " (exposure %" PRId64 "..%" PRId64 " step %" PRIu64 " lines, gain index 0..%" PRId64 ")",
+                 want, got, (int64_t)q_exp.minimum, (int64_t)q_exp.maximum,
+                 (uint64_t)q_exp.step, (int64_t)q_gain.maximum);
+    }
+    return true;
+}
 
 #if CAPTURE_MODE_INDEX >= 0 || MODE_CYCLE || MODE_CONSOLE
 /*
@@ -862,6 +1082,17 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
         }
     } while (esp_log_timestamp() < t_end);
 
+    /*
+     * After the settle window, not before it: the bias is relative to AE's
+     * answer, so AE has to have finished answering. Doing it here also keeps
+     * autofocus out of the argument - the lens is already parked by now, and
+     * AF is left running on whatever the new exposure looks like rather than
+     * being asked to converge on a deliberately dark frame.
+     */
+    if (s_ev_bias != 0 && !apply_exposure_bias(fd, type, &buf)) {
+        goto done;
+    }
+
     ESP_LOGI(TAG, "captured frame: bytesused=%" PRIu32 " (expected %" PRIu32 ")",
              buf.bytesused, w * h * 2);
 
@@ -1006,8 +1237,8 @@ static void apply_flip(int fd)
 
 static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
 {
-    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d) ====",
-             index, want->name, s_hmirror, s_vflip);
+    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d ev%+d) ====",
+             index, want->name, s_hmirror, s_vflip, s_ev_bias);
 
     if (esp_video_init(&cam_config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed on mode %d", index);
@@ -1027,10 +1258,19 @@ static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
     if (!select_sensor_mode(fd, want)) {
         ESP_LOGE(TAG, "could not select %s - skipping this mode", want->name);
     } else {
-        /* Distinct names so each mode, and each flip state, is its own file. */
+        /*
+         * Distinct names so each mode, each flip state and each exposure bias
+         * is its own file. An exposure sweep at one resolution would otherwise
+         * write every frame over the last one, and the whole point of it is
+         * having the frames side by side.
+         */
         char name[48];
-        snprintf(name, sizeof(name), "imx708_%ux%u%s%s", want->width, want->height,
-                 s_hmirror ? "_h" : "", s_vflip ? "_v" : "");
+        char ev[8] = "";
+        if (s_ev_bias != 0) {
+            snprintf(ev, sizeof(ev), "_ev%+d", s_ev_bias);
+        }
+        snprintf(name, sizeof(name), "imx708_%ux%u%s%s%s", want->width, want->height,
+                 s_hmirror ? "_h" : "", s_vflip ? "_v" : "", ev);
         capture_at_current_mode(fd, name, AIM_SECONDS);
     }
 
@@ -1069,7 +1309,10 @@ static void mode_console_loop(void)
         return;
     }
 
-    printf("\nType a digit to capture that mode, h/v to toggle flips, n to clear them, q to finish:\n");
+    printf("\nType a digit to capture that mode, q to finish.\n"
+           "  h / v   toggle horizontal / vertical flip, n clears both\n"
+           "  - / +   expose one stop darker / brighter than AE, a returns to auto\n"
+           "          (d and b are dash-free aliases for - and +, for --keys)\n");
     for (int i = 0; ; i++) {
         const esp_cam_sensor_format_t *f = imx708_format_by_index(i);
         if (f == NULL) {
@@ -1084,7 +1327,8 @@ static void mode_console_loop(void)
 
         int index = -1;
         bool flip_changed = false;
-        while (index < 0 && !flip_changed) {
+        bool ev_changed = false;
+        while (index < 0 && !flip_changed && !ev_changed) {
             unsigned char c;
             if (read(STDIN_FILENO, &c, 1) != 1) {
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -1095,9 +1339,10 @@ static void mode_console_loop(void)
                 return;
             }
             /*
-             * A flip key changes state and reprints the prompt without
-             * capturing, so it still costs exactly one prompt - which is what
-             * capture.py counts to stay in step. Flip, then pick a mode.
+             * A flip or exposure key changes state and reprints the prompt
+             * without capturing, so it still costs exactly one prompt - which
+             * is what capture.py counts to stay in step. Set up, then pick a
+             * mode: "-,-,0" is two stops under AE at 1920x1080.
              */
             if (c == 'h' || c == 'H') {
                 s_hmirror = !s_hmirror;
@@ -1109,6 +1354,20 @@ static void mode_console_loop(void)
                 s_hmirror = 0;
                 s_vflip = 0;
                 flip_changed = true;
+            } else if (c == '-' || c == 'd' || c == 'D') {
+                /*
+                 * d and b alias - and + because capture.py takes its script as
+                 * --keys, and argparse reads a value beginning with a dash as
+                 * the next option. A key you cannot script is half a key.
+                 */
+                s_ev_bias -= (s_ev_bias > EV_BIAS_MIN);
+                ev_changed = true;
+            } else if (c == '+' || c == '=' || c == 'b' || c == 'B') {
+                s_ev_bias += (s_ev_bias < EV_BIAS_MAX);
+                ev_changed = true;
+            } else if (c == 'a' || c == 'A') {
+                s_ev_bias = 0;
+                ev_changed = true;
             } else if (c >= '0' && c <= '9') {
                 index = c - '0';
             }
@@ -1116,6 +1375,11 @@ static void mode_console_loop(void)
         }
         if (flip_changed) {
             printf("flip -> hmirror=%d vflip=%d\n", s_hmirror, s_vflip);
+            continue;
+        }
+        if (ev_changed) {
+            printf("exposure -> %+d stop%s\n", s_ev_bias,
+                   s_ev_bias == 0 ? " (auto, AE decides)" : " from AE");
             continue;
         }
         printf("%d\n", index);
