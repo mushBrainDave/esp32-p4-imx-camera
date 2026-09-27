@@ -25,6 +25,7 @@ with `;` or `if ($?) { ... }`.
 - [Video over USB](#video-over-usb)
 - [Video over WiFi](#video-over-wifi)
 - [Resolution modes](#resolution-modes)
+- [Frame rate, exposure, test patterns and link frequency](#frame-rate-exposure-test-patterns-and-link-frequency)
 - [ESP32-C6 radio](#esp32-c6-radio)
 - [Post-mortem and instrumentation](#post-mortem-and-instrumentation)
 
@@ -926,7 +927,228 @@ takes its line stride from the width it is given.
 **1080p is the only mode that misses 28 fps.** The encoder is the rate limiter
 at full size (36290 µs mean against 35714 available); every smaller mode has
 headroom to spare. A smaller mode does not make the sensor faster — all five
-read out at 28 fps — it buys the encode budget to keep up.
+default to 28 fps — it buys the encode budget to keep up. Frame rate itself is a
+separate control; see the next section.
+
+---
+
+## Frame rate, exposure, test patterns and link frequency
+
+All four are keys at the same `MODESEL> ` prompt as the mode digits and the
+flips. Like a flip, each changes state, reprints the prompt and captures
+nothing, so it costs exactly one prompt and `--keys` stays in step. **Set up
+first, then press a mode digit** — the digit is what captures, with every
+setting in force at that moment. Settings persist across captures until you
+change them.
+
+| Key | Cycles | Echo |
+| --- | ------ | ---- |
+| `-` / `d` | exposure one stop under AE, down to −6 | `exposure -> -1 stop from AE` |
+| `+` / `b` | one stop over, up to +3 | `exposure -> +1 stop from AE` |
+| `a` | exposure back to AE | `exposure -> +0 stop (auto, AE decides)` |
+| `f` | frame length: mode default, 15, 10, 56 fps, 2 s | `frame length -> 4990 lines (~67 ms)` |
+| `t` | test pattern: off, colour bars, solid, fade-to-grey, PN9 | `test pattern -> PN9` |
+| `l` | link frequency: 450, 447, 453 MHz | `link frequency -> 447 MHz` |
+
+**Use `d` and `b` in `--keys`, never `-` and `+`.** argparse reads a `--keys`
+value that begins with a dash as the next option, and `"-,0"` fails before
+anything is sent. The letters are aliases for exactly this.
+
+### Exposure bias
+
+AE settles first, then the bias is applied relative to what it chose, with AE
+switched off so it cannot walk back. Two stops under, then AE again, at 1080p:
+
+```bash
+python tools/capture.py --flash --seconds 90 --keys "d,d,0,a,0,q" --out ev_test
+```
+
+The frames land as `imx708_1920x1080_ev-2` and `imx708_1920x1080`. The log line
+says what AE had and what the sensor now has, which is how to tell whether a
+stop came out of integration time or gain, and whether a range ran out:
+
+```bash
+grep -a "exposure bias" captures/ev_test/log.txt
+```
+
+```
+imx708_snapshot: exposure bias -2 stop: AE had 2494 lines @ 16.000x, now 2494 lines @ 4.000x
+imx708_snapshot: exposure bias -6 stop: AE had 2494 lines @ 16.000x, now 554 lines @ 1.123x
+```
+
+A dim room, so AE was at full gain: two stops came entirely out of gain, and six
+took gain to its floor before cutting lines.
+
+Darkening drives gain to its floor and then cuts integration time; brightening
+lengthens the exposure first. The exposure value is read back from the control
+rather than echoed, so a write esp_video rejected (an off-step value, say)
+shows up here as a number that did not move.
+
+Under-exposing is the way to get a frame with nothing clipped, which is the only
+frame a question about highlight colour can be answered on.
+
+### Frame rate
+
+`f` is applied *after* `STREAMON`, deliberately — the control is live, and a
+running stream is the case worth proving. Each capture logs the frame length the
+driver has, the exposure range V4L2 now advertises, and the rate actually
+delivered, timed across DQBUFs over the second half of the settle window:
+
+```bash
+python tools/capture.py --flash --seconds 150 --keys "f,0,f,0,f,0,f,0,q" --out fps_sweep
+```
+
+```bash
+grep -a "frame length\|measured" captures/fps_sweep/log.txt
+```
+
+```
+imx708_snapshot: frame length 1336 lines (range 1336..8388480), V4L2 exposure 4..1288 step 2
+imx708_snapshot: measured 56.000 fps (168 frames in 3000 ms)
+```
+
+That sweep goes 15, 10, 56 fps, then 2 s. Frames are named with the frame
+length — `imx708_1920x1080_fl4990` — so a sweep does not overwrite itself.
+
+**Trust `measured`, not the echo.** The echo is what was asked for; `measured`
+is what the P4 got. They agree to three decimals when things work, so any gap is
+the finding. Arithmetic for a frame length not on the key, e.g. 48 fps:
+
+```bash
+python -c "fps=48; l=round(74847/fps); print(l, 'lines ->', 74847/l, 'fps')"
+```
+
+**The exposure maximum should follow the frame length at once** — frame length
+minus 48 lines. If the `V4L2 exposure` range on that line did not move with the
+frame, esp_video is not re-querying and AE is clamped to a stale ceiling.
+
+**A long frame gives manual exposure room, not AE.** The IPA reads the range
+once at `esp_video_init()`. To actually expose into a 2 s frame, pair it with
+over-exposure: `f` four times to reach 2 s, then `b` until the log's `now` stops
+climbing:
+
+```bash
+python tools/capture.py --flash --seconds 240 --keys "f,f,f,f,b,b,b,0,q" --out long_exposure
+```
+
+At 2 s the long-exposure shift is on, so the advertised exposure minimum and
+step are 4× the normal pair (16 and 8), and `measured` reads 0.500. +3 stops
+from there reached `now 141792 lines`.
+
+**640×480 tears from 48 fps up**, with nothing logged; every other mode is clean
+at 56. So `f,f,f,4` (56 fps at 640×480) is the one combination on the key that
+produces a broken frame. It is downstream of the sensor and unexplained, so look
+at the picture, not the log.
+
+**The video example takes a rate at build time.** `VIDEO_FPS` in
+`imx708_video_main.c`, 2..56, `0` for the mode's own 28. Pair it with a mode:
+
+```bash
+sed -i 's/^#define VIDEO_FPS           .*$/#define VIDEO_FPS           56/; s/^#define VIDEO_MODE_INDEX    .*$/#define VIDEO_MODE_INDEX    (1)/' components/esp_cam_sensor_imx/examples/imx708_video/main/imx708_video_main.c
+```
+
+```bash
+python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_video --seconds 120 --out clip_720p56
+```
+
+```bash
+grep -a "frame rate:\|H.264" captures/clip_720p56/log.txt
+```
+
+The first line gives requested against what the sensor was set to; the encoder's
+fps and GOP follow the latter. Then count what was actually recorded, which is
+the number that settles whether the encoder kept up:
+
+```bash
+wsl ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames,r_frame_rate -of csv=p=0 /mnt/c/Users/mushbrain/source/repos/imx708/captures/clip_720p56/imx708.mp4
+```
+
+720p at 56 should give about 448 frames for 8 s. 1080p stays encoder-bound at
+~27 fps whatever you ask for above that. Put both defines back to `0` and `(-1)`
+afterwards.
+
+### Test patterns
+
+Patterns replace the image, not the timing, so a pattern frame should measure
+the same fps as a live one. Colour bars then PN9, at 800×600:
+
+```bash
+python tools/capture.py --flash --seconds 120 --keys "t,3,t,t,t,3,q" --out tp_test
+```
+
+The frames land as `imx708_800x600_bars` and `imx708_800x600_pn9`. Every
+setting that is off its default goes into the name, in a fixed order —
+`imx708_<w>x<h>[_h][_v][_ev±N][_fl<lines>][_<pattern>][_lf<MHz>]`, with the
+pattern as `bars`, `solid`, `fade` or `pn9` — so no sweep overwrites itself.
+`capture.py`'s summary prints the CRC beside each:
+
+```
+  [OK ] imx708_800x600_pn9 rgb565 800x600 960000 bytes crc 54083a1e/54083a1e -> ...
+```
+
+Builds before this naming reused the plain `imx708_<w>x<h>` for every pattern
+and link frequency, so an older firmware's sweep overwrote itself on disk. Check
+the ELF SHA in the log if the names come out plain.
+
+**PN9 is sent raw, never JPEG.** It is incompressible noise, and it overruns the
+hardware JPEG encoder, which times out and asserts in `dma2d_force_end`. Raw
+here means the post-ISP RGB565 as a `.bmp`, not Bayer, and it has still been
+byte-identical across boots: **the same mode should give the same CRC every
+time.** `54083a1e` at 800×600 is the known-good value. A different CRC with the same settings is corruption on the
+link, which is what PN9 is for; colour bars are flat, and hide exactly that.
+
+**Bars that stop short of the frame edge are not a fault.** The generator clips
+to its own window, left at power-on defaults, so on a healthy link a pattern can
+end a few pixels in. Judge the bars that are drawn.
+
+The solid pattern is white by default. Its levels are set with
+`imx708_set_test_pattern_colour()`; the console has no key for that, and AWB
+still runs, so the hue on screen is not quite the levels given.
+
+### Link frequency
+
+`l` is applied before `STREAMON` — the driver refuses the change while
+streaming, because esp_video builds the CSI receiver from the rate at
+`STREAMON`. The log reads it back from the format esp_video will actually use,
+which is the one that has to agree with the sensor:
+
+```bash
+python tools/capture.py --flash --seconds 150 --keys "t,t,t,t,3,l,3,l,3,q" --out linkfreq_pn9
+```
+
+```bash
+grep -a "link frequency\|measured" captures/linkfreq_pn9/log.txt
+```
+
+```
+imx708_snapshot: link frequency 447000000 Hz, CSI lane rate 894000000 bit/s
+```
+
+That is PN9 at 450, 447 and 453 MHz, landing as `imx708_800x600_pn9`,
+`..._pn9_lf447` and `..._pn9_lf453`. **All three frames must give the same CRC
+and 28.000 fps**: only the link moves, and the pixel clock is a separate PLL.
+Lane rates read back as 900, 894 and 906 Mbit/s. What this knob is *for* is WiFi
+on the C6 suffering while the camera streams. To test that, hold a `/bench` run
+from [Stills: WiFi](#stills-wifi) against each frequency in a WiFi build.
+
+The Kconfig boot default is `CONFIG_CAMERA_IMX708_LINK_FREQ_447MHZ` /
+`_450MHZ` / `_453MHZ`:
+
+```bash
+grep -n "CAMERA_IMX708_LINK_FREQ" sdkconfig
+```
+
+### Checking the sensor came up clean
+
+`set_format` soft-resets the sensor and then waits for the chip ID to answer.
+Every capture should log a `set format` line; a run that logs it and then
+`DQBUF: no frame in 2 s - the stream has stopped` is the wedged-sensor state the
+reset exists to clear. Before 0.4.0 it survived reflashing. If it ever comes
+back, power-cycle the board — only unplugging reaches the camera:
+
+```bash
+grep -a "set format\|no frame in\|soft reset" captures/<run>/log.txt
+```
 
 ---
 
