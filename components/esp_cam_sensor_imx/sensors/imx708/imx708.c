@@ -34,7 +34,9 @@
 #define IMX708_HTS                7824    /* line_length_pix 0x1e90 */
 #define IMX708_VTS                2672    /* frame_length 0x0a70    */
 #define IMX708_TLINE_NS           13361   /* HTS / pixel_rate, ns   */
-/* 450 MHz link freq -> 900 Mbps per lane, 2 lanes */
+/* 450 MHz link freq -> 900 Mbps per lane, 2 lanes. What the const format
+   table says; the shadow carries the rate actually in force (see
+   imx708_link_freqs[]). */
 #define IMX708_MIPI_CSI_LINE_RATE 900000000
 
 /*
@@ -298,6 +300,42 @@ _Static_assert(IMX708_DEFAULT_FORMAT_INDEX < IMX708_FMT_MAX,
                "CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT is out of range");
 _Static_assert(IMX708_FMT_MAX == ARRAY_SIZE(imx708_format_info),
                "mode index enum and format table disagree");
+
+/*
+ * Link frequencies, indexed by imx708_link_freq_t - Raspberry Pi's order, so an
+ * index means the same thing on both drivers. Only the output PLL multiplier
+ * differs between them; see IMX708_REG_IOP_PLL_MPY_H.
+ */
+typedef struct {
+    uint32_t hz;    /*!< link (D-PHY clock) frequency */
+    uint16_t mpy;   /*!< 0x030E/0x030F */
+} imx708_link_freq_info_t;
+
+static const imx708_link_freq_info_t imx708_link_freqs[] = {
+    [IMX708_LINK_FREQ_450MHZ] = { 450000000, 0x012c },
+    [IMX708_LINK_FREQ_447MHZ] = { 447000000, 0x012a },
+    [IMX708_LINK_FREQ_453MHZ] = { 453000000, 0x012e },
+};
+
+/* The same frequencies again, flat, for query_para_desc's enumeration. */
+static const uint32_t imx708_link_freq_hz[] = {
+    [IMX708_LINK_FREQ_450MHZ] = 450000000,
+    [IMX708_LINK_FREQ_447MHZ] = 447000000,
+    [IMX708_LINK_FREQ_453MHZ] = 453000000,
+};
+
+_Static_assert(ARRAY_SIZE(imx708_link_freqs) == IMX708_LINK_FREQ_MAX &&
+               ARRAY_SIZE(imx708_link_freq_hz) == IMX708_LINK_FREQ_MAX,
+               "link frequency tables and imx708_link_freq_t disagree");
+
+/* A stale sdkconfig without the choice falls back to 450, as for the mode. */
+#if CONFIG_CAMERA_IMX708_LINK_FREQ_447MHZ
+#define IMX708_DEFAULT_LINK_FREQ IMX708_LINK_FREQ_447MHZ
+#elif CONFIG_CAMERA_IMX708_LINK_FREQ_453MHZ
+#define IMX708_DEFAULT_LINK_FREQ IMX708_LINK_FREQ_453MHZ
+#else
+#define IMX708_DEFAULT_LINK_FREQ IMX708_LINK_FREQ_450MHZ
+#endif
 _Static_assert(IMX708_FMT_MAX == ARRAY_SIZE(imx708_isp_info),
                "mode index enum and isp_info table disagree");
 
@@ -427,8 +465,11 @@ static const esp_cam_sensor_bayer_pattern_t imx708_bayer_by_flip[4] = {
  * use, and dev->cur_format points at the shadow rather than into the table.
  * That indirection is what lets bayer_type follow the flip bits: the static
  * table is const and shared between every device, while esp_video reads
- * bayer_type straight out of whatever cur_format points at. Every other field
- * is a verbatim copy of the static entry.
+ * bayer_type straight out of whatever cur_format points at. mipi_info.mipi_clk
+ * is the other field that can differ - it follows link_freq, and esp_video
+ * reads it to set up the CSI receiver at every STREAMON. Frame length and fps
+ * follow the run-time frame length. Every other field is a verbatim copy of
+ * the static entry.
  *
  * The shadow lives in the same allocation as the device (see imx708_detect),
  * so it is valid for exactly as long as anything can hold a pointer to it.
@@ -442,6 +483,7 @@ typedef struct {
     uint8_t  vflip;             /*!< 0x0101 bit 1 */
     uint8_t  test_pattern;      /*!< imx708_test_pattern_t; re-asserted by set_format */
     uint16_t test_colour[4];    /*!< R, Gr, B, Gb levels for the solid pattern */
+    uint8_t  link_freq;         /*!< imx708_link_freq_t; re-asserted by set_format */
     esp_cam_sensor_format_t   format;
     esp_cam_sensor_isp_info_t isp_info;
 } imx708_para_t;
@@ -976,6 +1018,43 @@ static esp_err_t imx708_set_test_colour(esp_cam_sensor_device_t *dev, size_t cha
     return ret;
 }
 
+/*
+ * Only between streams. esp_video builds the CSI receiver from the shadow's
+ * mipi_clk at STREAMON and keeps it until STREAMOFF, so a change mid-stream
+ * would leave the receiver's D-PHY set up for the old rate - and the output
+ * PLL cannot be relocked without dropping the link anyway. In standby the
+ * sensor takes the new multiplier at the next stream start, and so does the
+ * receiver, which is what makes the two agree.
+ */
+static esp_err_t imx708_set_link_freq_index(esp_cam_sensor_device_t *dev, uint32_t index)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+
+    if (para == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (index >= ARRAY_SIZE(imx708_link_freqs)) {
+        ESP_LOGE(TAG, "link frequency index %" PRIu32 " out of range (0..%d)", index,
+                 (int)ARRAY_SIZE(imx708_link_freqs) - 1);
+        return ESP_ERR_INVALID_ARG;
+    }
+    imx708_lock(dev);
+    esp_err_t ret = ESP_OK;
+    if (dev->stream_status) {
+        ESP_LOGE(TAG, "link frequency can only change while the sensor is not streaming");
+        ret = ESP_ERR_INVALID_STATE;
+    } else {
+        ret = imx708_write16(dev->sccb_handle, IMX708_REG_IOP_PLL_MPY_H, imx708_link_freqs[index].mpy);
+        if (ret == ESP_OK) {
+            para->link_freq = (uint8_t)index;
+            para->format.mipi_info.mipi_clk = 2 * imx708_link_freqs[index].hz;
+            ESP_LOGI(TAG, "link frequency %" PRIu32 " Hz", imx708_link_freqs[index].hz);
+        }
+    }
+    imx708_unlock(dev);
+    return ret;
+}
+
 static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_sensor_param_desc_t *qdesc)
 {
     esp_err_t ret = ESP_OK;
@@ -1017,6 +1096,13 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
         qdesc->number.maximum = IMX708_TEST_PATTERN_COLOUR_MAX;
         qdesc->number.step = 1;
         qdesc->default_value = IMX708_TEST_PATTERN_COLOUR_MAX;
+        break;
+    case IMX708_CID_LINK_FREQ:
+        /* Like V4L2_CID_LINK_FREQ's int menu: elements in Hz, value an index. */
+        qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_ENUMERATION;
+        qdesc->enumeration.count = ARRAY_SIZE(imx708_link_freq_hz);
+        qdesc->enumeration.elements = imx708_link_freq_hz;
+        qdesc->default_value = IMX708_DEFAULT_LINK_FREQ;
         break;
     case ESP_CAM_SENSOR_GAIN:
         /* Menu control: elements are total gain in milli-units, and the value
@@ -1077,6 +1163,9 @@ static esp_err_t imx708_get_para_value(esp_cam_sensor_device_t *dev, uint32_t id
     case IMX708_CID_TEST_PATTERN_BLUE:
     case IMX708_CID_TEST_PATTERN_GREENB:
         *(uint32_t *)arg = para->test_colour[id - IMX708_CID_TEST_PATTERN_RED];
+        break;
+    case IMX708_CID_LINK_FREQ:
+        *(uint32_t *)arg = para->link_freq;
         break;
     default:
         return ESP_ERR_NOT_SUPPORTED;
@@ -1143,6 +1232,9 @@ static esp_err_t imx708_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id
     case IMX708_CID_TEST_PATTERN_BLUE:
     case IMX708_CID_TEST_PATTERN_GREENB:
         ret = imx708_set_test_colour(dev, id - IMX708_CID_TEST_PATTERN_RED, *(const uint32_t *)arg);
+        break;
+    case IMX708_CID_LINK_FREQ:
+        ret = imx708_set_link_freq_index(dev, *(const uint32_t *)arg);
         break;
     default:
         ESP_LOGE(TAG, "set id=%" PRIx32 " not supported", id);
@@ -1276,6 +1368,8 @@ static esp_err_t imx708_select_format(esp_cam_sensor_device_t *dev, const esp_ca
         para->format.isp_info = &para->isp_info;
         para->frame_length_default = para->isp_info.isp_v1_info.vts;
     }
+    /* DDR: two bits per lane per link clock. */
+    para->format.mipi_info.mipi_clk = 2 * imx708_link_freqs[para->link_freq].hz;
     dev->cur_format = &para->format;
     return ESP_OK;
 }
@@ -1307,7 +1401,8 @@ static esp_err_t imx708_set_format_locked(esp_cam_sensor_device_t *dev, const es
 
     ret = imx708_write_array(dev->sccb_handle, (const imx708_reginfo_t *)format->regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write mode regs failed");
-    ret = imx708_write_array(dev->sccb_handle, imx708_link_450mhz_regs);
+    ret = imx708_write16(dev->sccb_handle, IMX708_REG_IOP_PLL_MPY_H,
+                         imx708_link_freqs[((imx708_para_t *)dev->priv)->link_freq].mpy);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write link regs failed");
 
     /*
@@ -1457,8 +1552,8 @@ static esp_err_t imx708_power_off(esp_cam_sensor_device_t *dev)
 }
 
 /*
- * The detected sensor, for the frame-length and test-pattern-colour functions
- * in imx708.h. esp_video detects the sensor itself and keeps the handle
+ * The detected sensor, for the frame-length, test-pattern-colour and
+ * link-frequency functions in imx708.h. esp_video detects the sensor itself and keeps the handle
  * private, so an application built on it has no esp_cam_sensor_device_t to
  * pass - and both are controls esp_video has no V4L2 mapping for. The P4 has one CSI port, so
  * there is one of these at most.
@@ -1533,6 +1628,36 @@ esp_err_t imx708_set_test_pattern_colour(uint16_t r, uint16_t gr, uint16_t b, ui
     return ret;
 }
 
+esp_err_t imx708_set_link_freq(uint32_t hz)
+{
+    esp_cam_sensor_device_t *dev = s_imx708_dev;
+
+    if (dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    for (uint32_t i = 0; i < ARRAY_SIZE(imx708_link_freqs); i++) {
+        if (imx708_link_freqs[i].hz == hz) {
+            return imx708_set_link_freq_index(dev, i);
+        }
+    }
+    ESP_LOGE(TAG, "link frequency %" PRIu32 " Hz not supported (447, 450 or 453 MHz)", hz);
+    return ESP_ERR_INVALID_ARG;
+}
+
+esp_err_t imx708_get_link_freq(uint32_t *hz)
+{
+    esp_cam_sensor_device_t *dev = s_imx708_dev;
+
+    if (dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (hz == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *hz = imx708_link_freqs[((const imx708_para_t *)dev->priv)->link_freq].hz;
+    return ESP_OK;
+}
+
 static const esp_cam_sensor_ops_t imx708_ops = {
     .query_para_desc = imx708_query_para_desc,
     .get_para_value = imx708_get_para_value,
@@ -1560,6 +1685,8 @@ esp_cam_sensor_device_t *imx708_detect(esp_cam_sensor_config_t *config)
     for (size_t i = 0; i < ARRAY_SIZE(imx708_test_colour_reg); i++) {
         ((imx708_para_t *)dev->priv)->test_colour[i] = IMX708_TEST_PATTERN_COLOUR_MAX; /* Linux's default */
     }
+    /* Before the shadow below, which takes its mipi_clk from this. */
+    ((imx708_para_t *)dev->priv)->link_freq = IMX708_DEFAULT_LINK_FREQ;
 
     dev->name = (char *)IMX708_SENSOR_NAME;
     dev->sccb_handle = config->sccb_handle;

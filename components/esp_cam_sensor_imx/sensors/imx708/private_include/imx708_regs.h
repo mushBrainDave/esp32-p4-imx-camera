@@ -31,6 +31,15 @@ extern "C" {
 #define IMX708_REG_CSI_LANE_MODE    0x0114  /*!< 0x01 = 2 lane */
 
 /*
+ * Output (IOP) PLL multiplier, 16-bit: the clock the MIPI PHY runs from, so
+ * the link frequency. 1.5 MHz of link per step - 0x012c = 300 is 450 MHz.
+ * The pixel clock comes from the separate IVT PLL (0x0306/0x0307, written by
+ * the mode tables), which is why this can move without touching frame timing.
+ */
+#define IMX708_REG_IOP_PLL_MPY_H    0x030E
+#define IMX708_REG_IOP_PLL_MPY_L    0x030F
+
+/*
  * V timing.
  *
  * Frame length is the frame-rate control: line length is fixed per mode, so

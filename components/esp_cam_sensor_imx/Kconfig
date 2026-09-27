@@ -106,6 +106,38 @@ menu "Camera Sensor (IMX add-on)"
                 imx708_format_by_index() or imx708_format_by_size() to
                 esp_video's VIDIOC_S_SENSOR_FMT before allocating buffers.
 
+        choice CAMERA_IMX708_LINK_FREQ
+            prompt "MIPI link frequency"
+            default CAMERA_IMX708_LINK_FREQ_450MHZ
+            help
+                The MIPI D-PHY clock the sensor transmits at. Data is sent on
+                both clock edges, so each of the two lanes carries twice this
+                in bits per second.
+
+                The three are Raspberry Pi's, and they exist for one reason:
+                to move the link's harmonics off a radio channel they would
+                otherwise land on. The ESP32-C6 on the same board transmits
+                centimetres from the camera cable, so if WiFi throughput drops
+                while the camera streams - or frames tear only while WiFi is
+                busy - try the other two.
+
+                Only the link moves. The pixel clock is a separate PLL, so
+                frame rate, exposure and every mode are identical at all
+                three. All three also carry the widest mode's line (1920
+                RAW10 pixels per 13.36 us, about 1.44 Gbit/s across both
+                lanes) with room to spare.
+
+                An application can change it at run time while the sensor is
+                not streaming: imx708_set_link_freq() in imx708.h.
+
+            config CAMERA_IMX708_LINK_FREQ_450MHZ
+                bool "450 MHz (900 Mbit/s per lane)"
+            config CAMERA_IMX708_LINK_FREQ_447MHZ
+                bool "447 MHz (894 Mbit/s per lane)"
+            config CAMERA_IMX708_LINK_FREQ_453MHZ
+                bool "453 MHz (906 Mbit/s per lane)"
+        endchoice
+
     endif # CAMERA_IMX708
 
 endmenu

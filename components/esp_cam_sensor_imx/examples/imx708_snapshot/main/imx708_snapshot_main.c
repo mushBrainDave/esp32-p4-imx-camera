@@ -751,6 +751,20 @@ static const char *const s_test_pattern_names[] = {
 static int s_test_pattern = IMX708_TEST_PATTERN_OFF;
 
 /*
+ * MIPI link frequency for the next capture, cycled from the console with l.
+ * Raspberry Pi's three; they exist to move the link's harmonics off a radio
+ * channel, so this is the knob to turn if WiFi on the C6 suffers while the
+ * camera streams. Frame timing is identical at all three.
+ *
+ * Applied before STREAMON, and it has to be: the driver refuses the change on
+ * a running stream, because esp_video sets the CSI receiver up for the link
+ * rate at STREAMON. It also has to come after esp_video_init(), which
+ * re-detects the sensor at the Kconfig default each capture.
+ */
+static const uint32_t s_link_freqs[] = { 450000000, 447000000, 453000000 };
+static int s_link_freq_idx = 0;
+
+/*
  * Exposure and gain are USER-class controls, unlike focus, which is
  * CAMERA-class. Getting the class wrong is not an error - it is a lookup that
  * quietly finds nothing.
@@ -1042,6 +1056,23 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
 #endif
         ioctl(fd, VIDIOC_QBUF, &b);
     }
+
+    {
+        esp_err_t e = imx708_set_link_freq(s_link_freqs[s_link_freq_idx]);
+        if (e != ESP_OK) {
+            ESP_LOGE(TAG, "imx708_set_link_freq(%" PRIu32 ") failed: %s",
+                     s_link_freqs[s_link_freq_idx], esp_err_to_name(e));
+        }
+        /* Read the lane rate back from the format esp_video will build the CSI
+           receiver from, not from the driver: that is the one that has to agree
+           with the sensor. */
+        uint32_t hz = 0;
+        esp_cam_sensor_format_t sf = {0};
+        imx708_get_link_freq(&hz);
+        ioctl(fd, VIDIOC_G_SENSOR_FMT, &sf);
+        ESP_LOGI(TAG, "link frequency %" PRIu32 " Hz, CSI lane rate %" PRIu32 " bit/s",
+                 hz, sf.mipi_info.mipi_clk);
+    }
     ioctl(fd, VIDIOC_STREAMON, &type);
 
     {
@@ -1322,9 +1353,9 @@ static void apply_flip(int fd)
 
 static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
 {
-    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d ev%+d fl=%" PRIu32 " tp=%d) ====",
+    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d ev%+d fl=%" PRIu32 " tp=%d link=%" PRIu32 ") ====",
              index, want->name, s_hmirror, s_vflip, s_ev_bias, s_frame_lengths[s_frame_length_idx],
-             s_test_pattern);
+             s_test_pattern, s_link_freqs[s_link_freq_idx]);
 
     if (esp_video_init(&cam_config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed on mode %d", index);
@@ -1404,7 +1435,8 @@ static void mode_console_loop(void)
            "  - / +   expose one stop darker / brighter than AE, a returns to auto\n"
            "          (d and b are dash-free aliases for - and +, for --keys)\n"
            "  f       cycle frame rate: mode default, 15, 10, 56 fps, 2 s\n"
-           "  t       cycle sensor test pattern: off, colour bars, solid, fade, PN9\n");
+           "  t       cycle sensor test pattern: off, colour bars, solid, fade, PN9\n"
+           "  l       cycle MIPI link frequency: 450, 447, 453 MHz\n");
     for (int i = 0; ; i++) {
         const esp_cam_sensor_format_t *f = imx708_format_by_index(i);
         if (f == NULL) {
@@ -1422,7 +1454,8 @@ static void mode_console_loop(void)
         bool ev_changed = false;
         bool fl_changed = false;
         bool tp_changed = false;
-        while (index < 0 && !flip_changed && !ev_changed && !fl_changed && !tp_changed) {
+        bool lf_changed = false;
+        while (index < 0 && !flip_changed && !ev_changed && !fl_changed && !tp_changed && !lf_changed) {
             unsigned char c;
             if (read(STDIN_FILENO, &c, 1) != 1) {
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -1468,6 +1501,9 @@ static void mode_console_loop(void)
             } else if (c == 't' || c == 'T') {
                 s_test_pattern = (s_test_pattern + 1) % (int)(sizeof(s_test_pattern_names) / sizeof(s_test_pattern_names[0]));
                 tp_changed = true;
+            } else if (c == 'l' || c == 'L') {
+                s_link_freq_idx = (s_link_freq_idx + 1) % (int)(sizeof(s_link_freqs) / sizeof(s_link_freqs[0]));
+                lf_changed = true;
             } else if (c >= '0' && c <= '9') {
                 index = c - '0';
             }
@@ -1495,6 +1531,10 @@ static void mode_console_loop(void)
         }
         if (tp_changed) {
             printf("test pattern -> %s\n", s_test_pattern_names[s_test_pattern]);
+            continue;
+        }
+        if (lf_changed) {
+            printf("link frequency -> %" PRIu32 " MHz\n", s_link_freqs[s_link_freq_idx] / 1000000);
             continue;
         }
         printf("%d\n", index);

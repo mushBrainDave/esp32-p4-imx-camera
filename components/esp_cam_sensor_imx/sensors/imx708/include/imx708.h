@@ -205,6 +205,60 @@ typedef enum {
  */
 esp_err_t imx708_set_test_pattern_colour(uint16_t r, uint16_t gr, uint16_t b, uint16_t gb);
 
+/**
+ * @brief The MIPI link frequencies the sensor can run at.
+ *
+ * Raspberry Pi's three, in Raspberry Pi's order. They differ by under 1%, and
+ * exist to move the link's harmonics off a radio channel - relevant on a board
+ * whose ESP32-C6 transmits centimetres from the camera cable. Only the link
+ * moves: pixel clock, frame rate, exposure and every mode are the same at all
+ * three. The boot default is Kconfig's CAMERA_IMX708_LINK_FREQ.
+ */
+typedef enum {
+    IMX708_LINK_FREQ_450MHZ = 0, /*!< 900 Mbit/s per lane, the default */
+    IMX708_LINK_FREQ_447MHZ = 1, /*!< 894 Mbit/s per lane */
+    IMX708_LINK_FREQ_453MHZ = 2, /*!< 906 Mbit/s per lane */
+    IMX708_LINK_FREQ_MAX,
+} imx708_link_freq_t;
+
+/**
+ * @brief Link frequency as an esp_cam_sensor parameter.
+ *
+ * An enumeration like V4L2_CID_LINK_FREQ's int menu: esp_cam_sensor_query_para_desc()
+ * lists the frequencies in Hz, and the uint32_t set or read is an
+ * imx708_link_freq_t index into that list. Same rules as
+ * imx708_set_link_freq(). For callers holding the sensor handle; esp_video
+ * maps no V4L2 control onto it.
+ */
+#define IMX708_CID_LINK_FREQ  ESP_CAM_SENSOR_CLASS_ID(ESP_CAM_SENSOR_CID_CLASS_USER, 0x70d)
+
+/**
+ * @brief Change the MIPI link frequency.
+ *
+ * Only while the sensor is not streaming - between VIDIOC_STREAMOFF and
+ * VIDIOC_STREAMON with esp_video. esp_video sets up the P4's CSI receiver for
+ * the link rate at every STREAMON and holds it until STREAMOFF, so a change
+ * mid-stream would leave the receiver expecting the old rate. Made in between,
+ * the sensor and the receiver both pick it up at the next STREAMON.
+ *
+ * It survives a mode change (VIDIOC_S_SENSOR_FMT re-applies it). It does not
+ * survive a reboot: the next boot starts at the Kconfig default.
+ *
+ * @param hz 447000000, 450000000 or 453000000.
+ * @return ESP_OK; ESP_ERR_INVALID_ARG for any other frequency;
+ *         ESP_ERR_INVALID_STATE if no IMX708 has been detected or it is
+ *         streaming; an SCCB error if the write failed.
+ */
+esp_err_t imx708_set_link_freq(uint32_t hz);
+
+/**
+ * @brief Read the link frequency in force, in Hz.
+ *
+ * @return ESP_OK; ESP_ERR_INVALID_ARG if hz is NULL; ESP_ERR_INVALID_STATE if
+ *         no IMX708 has been detected.
+ */
+esp_err_t imx708_get_link_freq(uint32_t *hz);
+
 #ifdef __cplusplus
 }
 #endif
