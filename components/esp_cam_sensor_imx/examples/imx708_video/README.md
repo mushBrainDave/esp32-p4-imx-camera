@@ -207,13 +207,47 @@ still means a rebuild and flash.
 | ------ | ------- | ----- |
 | `VIDEO_SECONDS` | 8 | Recording length, once settled |
 | `VIDEO_BITRATE` | 4000000 | Bits per second the rate control aims at |
-| `VIDEO_FPS` | 28 | Every sensor mode runs at 28 fps. Sets the bit budget per frame and the SPS timing; it does not make frames arrive faster |
-| `VIDEO_GOP` | 28 | One IDR per second. Shorter spends bitrate re-sending the scene; longer makes seeking coarser |
+| `VIDEO_FPS` | 0 | Frame rate, 2..56. Sets the sensor's frame length, so frames really arrive at this rate; 0 keeps the mode's own 28. See "Frame rate" below |
+| `VIDEO_GOP_SECONDS` | 1 | One IDR per second, at whatever the frame rate is. Shorter spends bitrate re-sending the scene; longer makes seeking coarser |
 | `VIDEO_QP_MIN/MAX` | 20 / 45 | Quality bounds for rate control. 51 is the codec maximum |
 | `REC_BUF_BYTES` | 6 MB | Clip buffer, and the real limit on length |
 | `ENC_OUT_BYTES` | 512 KB | Per-frame encoder output. Must fit the largest IDR |
 | `AIM_SECONDS` | 6 | Settling before recording. Too short and you record the autofocus hunting |
 | `ENCODE_16_ALIGNED` | 1 | See "1072 lines, not 1080" above |
+
+### Frame rate
+
+`VIDEO_FPS` is converted to a frame length from the mode's own pixel clock and
+line length and handed to `imx708_set_frame_length()` after the mode switch,
+before the encoder is created. The encoder's fps, the GOP and the per-frame
+budget in the log are then derived from the frame length the driver *read
+back* - it is whole lines, so 30 fps is really 29.999 - and the log says both:
+
+```
+I imx708: frame length 2672 -> 1337 lines (shift 0, 56 fps), exposure 4..1288 step 2
+I imx708_video: frame rate: asked for 56 fps, sensor set to 55.981 fps
+I imx708_video: H.264 1280x720 @ 56 fps, 4000000 bit/s, GOP 56, QP 20-45
+I imx708_video: recorded 448 frames (8 IDR, 0 failed) in 7995 ms - 56.0 fps, stopped on: time
+I imx708_video: encode 15842 us mean, 16007 us worst (17863 us per frame available)
+```
+
+Measured 2026-09-27, 8 s clips, every one decoded by ffmpeg without an error:
+
+| Mode | `VIDEO_FPS` | Sensor | Recorded | Encode mean / budget |
+| ---- | ----------- | ------ | -------- | -------------------- |
+| 1280x720 | 30 | 29.999 | 30.0 fps, 240 frames | 14.5 / 33.3 ms |
+| 1280x720 | 56 | 55.981 | 56.0 fps, 448 frames | 15.8 / 17.9 ms |
+| 1920x1080 | 15 | 14.999 | 15.0 fps, 120 frames | 32.7 / 66.7 ms |
+| 1920x1080 | 0 | 28.011 | 27.1 fps, 217 frames | 36.4 / 35.7 ms |
+
+So 720p runs at the sensor's full 56 fps with 2 ms to spare, while 1080p is
+still bound by the encoder at ~27 fps whatever it is asked for. Asking 1080p
+for more than 27 records at 27, correctly timestamped. The 640x480 mode tears
+at 48 fps and above in `imx708_snapshot`; that has not been re-checked here.
+
+Two things a lower rate does not do: brighten a dim scene - AE learnt its
+exposure ceiling at `esp_video_init()`, before the frame length is set, and
+keeps to it - or buy transfer time: the clip is bitrate-bound, not frame-bound.
 
 ## If the clip is wrong
 
