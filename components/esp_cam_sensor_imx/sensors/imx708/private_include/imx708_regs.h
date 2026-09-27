@@ -24,15 +24,52 @@ extern "C" {
 
 /* Core control */
 #define IMX708_REG_MODE_SELECT      0x0100  /*!< 0=standby, 1=streaming */
+#define IMX708_REG_SW_RESET         0x0103  /*!< write 1: every register back to power-on */
 #define IMX708_REG_ORIENTATION      0x0101  /*!< bit0 = h flip, bit1 = v flip */
 #define IMX708_ORIENTATION_HMIRROR  0x01
 #define IMX708_ORIENTATION_VFLIP    0x02
 #define IMX708_REG_CSI_LANE_MODE    0x0114  /*!< 0x01 = 2 lane */
 
-/* V timing */
+/*
+ * Output (IOP) PLL multiplier, 16-bit: the clock the MIPI PHY runs from, so
+ * the link frequency. 1.5 MHz of link per step - 0x012c = 300 is 450 MHz.
+ * The pixel clock comes from the separate IVT PLL (0x0306/0x0307, written by
+ * the mode tables), which is why this can move without touching frame timing.
+ */
+#define IMX708_REG_IOP_PLL_MPY_H    0x030E
+#define IMX708_REG_IOP_PLL_MPY_L    0x030F
+
+/*
+ * V timing.
+ *
+ * Frame length is the frame-rate control: line length is fixed per mode, so
+ * fps = pixel_rate / (line_length * frame_length), and it is also the exposure
+ * ceiling, since integration cannot run past frame_length - 48 lines. The
+ * register is live - a new value takes effect at the next frame boundary with
+ * no standby - which is how Raspberry Pi's driver serves V4L2_CID_VBLANK.
+ *
+ * The floor is the rows the sensor actually reads plus a minimum blanking. For
+ * the binned readout that is 1296 rows (2592 binned 2:1) whatever the output
+ * size, because every mode here is a digital crop taken after the full
+ * readout; 40 lines is Raspberry Pi's vblank_min for that mode. 1336 lines is
+ * 56 fps, which is a sensor limit and says nothing about whether the P4
+ * pipeline downstream keeps up.
+ *
+ * The register's own ceiling is 16 bits, about 0.88 s per frame in the binned
+ * modes. Past that the long-exposure shift at 0x3100 takes over: at shift s the
+ * sensor counts both frame length (0x0340) and coarse integration (0x0202) in
+ * units of 2^s lines, up to s = 7, so the longest frame is 128 x 0xffff lines -
+ * about 112 s binned. Raspberry Pi's driver drives it the same way. No mode
+ * table writes 0x3100, so it survives a mode change unless cleared.
+ */
 #define IMX708_REG_FRAME_LENGTH_H   0x0340  /*!< VTS (frame length lines) */
 #define IMX708_REG_FRAME_LENGTH_L   0x0341
-#define IMX708_FRAME_LENGTH_MAX     0xffff
+#define IMX708_FRAME_LENGTH_MAX     0xffff  /*!< register ceiling, per shift unit */
+#define IMX708_REG_LONG_EXP_SHIFT   0x3100  /*!< 0..7: frame and exposure counted in 2^n lines */
+#define IMX708_LONG_EXP_SHIFT_MAX   7
+#define IMX708_FRAME_LENGTH_LONG_MAX ((uint32_t)IMX708_FRAME_LENGTH_MAX << IMX708_LONG_EXP_SHIFT_MAX)
+#define IMX708_BINNED_READOUT_ROWS  1296
+#define IMX708_VBLANK_MIN_BINNED    40
 
 /* Exposure / gain (all 16-bit, big-endian) */
 #define IMX708_REG_EXPOSURE_H       0x0202
@@ -169,11 +206,22 @@ extern "C" {
 #define IMX708_LPF_INTENSITY_ENABLED   0x00
 #define IMX708_LPF_INTENSITY_DISABLED  0x01
 
-/* Test pattern */
+/* Test pattern. Register values, not the V4L2 menu order - imx708.c maps
+   imx708_test_pattern_t onto these. */
 #define IMX708_REG_TEST_PATTERN_H   0x0600
 #define IMX708_REG_TEST_PATTERN_L   0x0601
-#define IMX708_TEST_PATTERN_DISABLE 0x0000
-#define IMX708_TEST_PATTERN_COLORBARS 0x0002
+#define IMX708_TP_REG_DISABLE       0x0000
+#define IMX708_TP_REG_SOLID         0x0001
+#define IMX708_TP_REG_COLOR_BARS    0x0002
+#define IMX708_TP_REG_GREY_BARS     0x0003
+#define IMX708_TP_REG_PN9           0x0004
+
+/* Solid-colour pattern, one 12-bit level per Bayer channel, 16-bit registers */
+#define IMX708_REG_TEST_PATTERN_R   0x0602
+#define IMX708_REG_TEST_PATTERN_GR  0x0604
+#define IMX708_REG_TEST_PATTERN_B   0x0606
+#define IMX708_REG_TEST_PATTERN_GB  0x0608
+#define IMX708_TEST_PATTERN_COLOUR_MAX 0x0fff
 
 /* External input clock */
 #define IMX708_INCLK_FREQ_HZ        24000000

@@ -6,7 +6,9 @@
  * IMX708 register initialisation sequences (standard Sony bring-up values).
  * The sensor's own tables are already byte-granular {addr, val8} pairs, so they
  * translate 1:1 — no 16-bit splitting needed. Applied in order:
- *   mode_common -> mode -> link_450Mhz, matching the sensor's bring-up order.
+ *   mode_common -> mode -> link frequency, matching the sensor's bring-up
+ * order. The link frequency is a single 16-bit multiplier chosen at run time,
+ * so it lives in imx708.c (imx708_link_freqs[]) rather than here.
  */
 #pragma once
 
@@ -36,12 +38,6 @@ static const imx708_reginfo_t imx708_common_regs[] = {
     {0x3479, 0x1c}, {0x3091, 0x01}, {0x3092, 0x00}, {0x3419, 0x00},
     {0xBCF1, 0x02}, {0x3094, 0x01}, {0x3095, 0x01}, {0x3362, 0x00},
     {0x3363, 0x00}, {0x3364, 0x00}, {0x3365, 0x00}, {0x0138, 0x01},
-    {IMX708_REG_END, 0x00},
-};
-
-/* Link frequency: 450 MHz (nominal default) -> 900 Mbps/lane on 2 lanes. */
-static const imx708_reginfo_t imx708_link_450mhz_regs[] = {
-    {0x030E, 0x01}, {0x030F, 0x2c},
     {IMX708_REG_END, 0x00},
 };
 

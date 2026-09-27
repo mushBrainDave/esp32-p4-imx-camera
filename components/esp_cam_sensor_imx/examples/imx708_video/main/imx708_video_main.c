@@ -107,25 +107,41 @@
 #define VIDEO_MODE_INDEX    (-1)
 
 /*
- * Every sensor mode runs at 28 fps - they are all crops of one readout, so the
- * line and frame timing never moves (see the IMX708 driver's mode table). That
- * is the frame rate the encoder is told to expect, whichever mode is selected
- * with CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT. It affects
- * rate control's bit budget per frame and the VUI timing written into the SPS;
- * it does not make frames arrive any faster. The clip is timestamped from the
- * frames that actually arrived, so a shortfall shows up as a slower measured
- * fps in the log and correct timing in the .mp4, not as a sped-up video.
+ * Frame rate to record at, in whole fps; 0 keeps the mode's own 28.
+ *
+ * This sets the sensor's frame length (imx708_set_frame_length), so frames
+ * really do arrive at this rate - it is not an encoder setting. The encoder's
+ * fps, the GOP and the per-frame budget in the log are then all derived from
+ * the rate the sensor was actually given, read back rather than assumed:
+ * the frame length is whole lines, so 30 fps is really 29.998.
+ *
+ * The sensor does 2 to 56 fps in every mode (below 2 it would work, but a clip
+ * of a few frames is not video). What the rest of the pipeline keeps up with
+ * is a separate question:
+ *  - 1920x1080 cannot hold even 28 - the encoder is the limit, at ~27.3 - so
+ *    asking it for more records at whatever the encoder manages.
+ *  - Every smaller mode holds 28 with headroom; see the README for how far.
+ *  - 640x480 tears at 48 fps and above in the snapshot example.
+ * A shortfall is never hidden: the clip is timestamped from frames as they
+ * arrived, and the log prints requested against delivered.
+ *
+ * Lowering it does not brighten dim scenes. AE learnt its exposure ceiling at
+ * esp_video_init(), before this runs, and keeps to it.
  */
-#define VIDEO_FPS           28
+#define VIDEO_FPS           0
+
+/* The IMX708's ceiling, in binned modes. Sizes the frame table. */
+#define VIDEO_FPS_MAX       56
 
 /*
- * One IDR per second. An IDR frame resets prediction, so it is both the only
- * place playback can start and the only place a stream can recover after a
- * corrupt frame; the encoder emits SPS+PPS ahead of each one. Every IDR costs
- * roughly a JPEG's worth of bits, so a much shorter GOP spends the bitrate on
- * re-sending the scene rather than on detail.
+ * GOP, in seconds: one IDR per second. An IDR frame resets prediction, so it is
+ * both the only place playback can start and the only place a stream can
+ * recover after a corrupt frame; the encoder emits SPS+PPS ahead of each one.
+ * Every IDR costs roughly a JPEG's worth of bits, so a much shorter GOP spends
+ * the bitrate on re-sending the scene rather than on detail. In frames, it is
+ * whatever the frame rate works out to.
  */
-#define VIDEO_GOP           VIDEO_FPS
+#define VIDEO_GOP_SECONDS   1
 
 /*
  * 4 Mbit/s at 1080p28. Deliberately well above what the 2 Mbaud console could
@@ -152,8 +168,9 @@
  */
 #define ENC_OUT_BYTES       (512 * 1024)
 
-/* Room for the frame table. Generous - a slow link is cheaper than a truncated log. */
-#define MAX_FRAMES          ((VIDEO_SECONDS + 4) * VIDEO_FPS)
+/* Room for the frame table, at the fastest rate the sensor can be set to.
+ * Generous - a slow link is cheaper than a truncated log. */
+#define MAX_FRAMES          ((VIDEO_SECONDS + 4) * VIDEO_FPS_MAX)
 
 /*
  * Long enough for AE, AWB *and* the autofocus search to converge before the
@@ -280,6 +297,51 @@ static uint32_t mean_luma(const uint8_t *yuv, uint32_t w, uint32_t h)
         }
     }
     return n ? (uint32_t)(sum / n) : 0;
+}
+
+/*
+ * Put the sensor on `fps` (0 = leave the mode alone) and return the rate it is
+ * actually running at, in milli-fps.
+ *
+ * Lines per frame come from the mode's own pixel clock and line length, read
+ * out of the sensor format, not from a hard-coded 74847/fps: every IMX708 mode
+ * shares one line time today, but the formula is the one that stays right if
+ * a mode ever gets its own. The rate is then recomputed from the frame length
+ * the driver read back, because the driver clamps to its range and a frame is
+ * whole lines.
+ *
+ * Returns 0 if the sensor's timing cannot be read, in which case the caller
+ * has no honest number to give the encoder.
+ */
+static uint32_t apply_frame_rate(int fd, uint32_t fps)
+{
+    esp_cam_sensor_format_t sf;
+    if (ioctl(fd, VIDIOC_G_SENSOR_FMT, &sf) != 0 || sf.isp_info == NULL) {
+        ESP_LOGE(TAG, "could not read the sensor format - frame rate unknown");
+        return 0;
+    }
+    uint64_t pclk = (uint64_t)sf.isp_info->isp_v1_info.pclk;
+    uint64_t hts = (uint64_t)sf.isp_info->isp_v1_info.hts;
+    if (pclk == 0 || hts == 0) {
+        ESP_LOGE(TAG, "sensor format has no line timing - frame rate unknown");
+        return 0;
+    }
+
+    if (fps != 0) {
+        uint32_t lines = (uint32_t)((pclk + hts * fps / 2) / (hts * fps));
+        esp_err_t err = imx708_set_frame_length(lines);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "imx708_set_frame_length(%" PRIu32 ") failed: %s - recording at the "
+                     "mode's own rate", lines, esp_err_to_name(err));
+        }
+    }
+
+    uint32_t lines = 0;
+    if (imx708_get_frame_length(&lines, NULL, NULL) != ESP_OK || lines == 0) {
+        ESP_LOGE(TAG, "could not read the frame length back - frame rate unknown");
+        return 0;
+    }
+    return (uint32_t)((pclk * 1000 + hts * lines / 2) / (hts * lines));
 }
 
 void app_main(void)
@@ -430,11 +492,35 @@ void app_main(void)
         goto cleanup;
     }
 
+    /* ---- Frame rate ------------------------------------------------------- */
+    /*
+     * After the mode switch, which restores the mode's own frame length, and
+     * before the encoder, which needs to know the answer. Nothing between here
+     * and STREAMON re-programs the sensor: esp_video only writes a format at
+     * esp_video_init() and VIDIOC_S_SENSOR_FMT.
+     */
+    uint32_t sensor_mfps = apply_frame_rate(fd, VIDEO_FPS);
+    if (sensor_mfps == 0) {
+        goto cleanup;
+    }
+    /* The encoder takes whole fps. Round, never 0. */
+    uint32_t enc_fps = (sensor_mfps + 500) / 1000;
+    if (enc_fps == 0) {
+        enc_fps = 1;
+    }
+    if (VIDEO_FPS != 0) {
+        ESP_LOGI(TAG, "frame rate: asked for %d fps, sensor set to %" PRIu32 ".%03" PRIu32 " fps",
+                 VIDEO_FPS, sensor_mfps / 1000, sensor_mfps % 1000);
+    } else {
+        ESP_LOGI(TAG, "frame rate: mode default, %" PRIu32 ".%03" PRIu32 " fps",
+                 sensor_mfps / 1000, sensor_mfps % 1000);
+    }
+
     /* ---- Encoder ---------------------------------------------------------- */
     esp_h264_enc_cfg_hw_t enc_cfg = {
         .pic_type = ESP_H264_RAW_FMT_O_UYY_E_VYY,
-        .gop      = VIDEO_GOP,
-        .fps      = VIDEO_FPS,
+        .gop      = (uint8_t)(enc_fps * VIDEO_GOP_SECONDS),
+        .fps      = (uint8_t)enc_fps,
         .res      = { .width = (uint16_t)w, .height = (uint16_t)enc_h },
         .rc       = { .bitrate = VIDEO_BITRATE, .qp_min = VIDEO_QP_MIN, .qp_max = VIDEO_QP_MAX },
     };
@@ -453,7 +539,7 @@ void app_main(void)
         goto cleanup;
     }
     ESP_LOGI(TAG, "H.264 %" PRIu32 "x%" PRIu32 " @ %d fps, %d bit/s, GOP %d, QP %d-%d",
-             w, enc_h, VIDEO_FPS, VIDEO_BITRATE, VIDEO_GOP, VIDEO_QP_MIN, VIDEO_QP_MAX);
+             w, enc_h, (int)enc_fps, VIDEO_BITRATE, (int)enc_cfg.gop, VIDEO_QP_MIN, VIDEO_QP_MAX);
 
     if (ioctl(fd, VIDIOC_STREAMON, &type) != 0) {
         ESP_LOGE(TAG, "STREAMON failed");
@@ -590,14 +676,14 @@ void app_main(void)
     uint32_t span_ms = s_frames[n_frames - 1].pts_ms;
     /* One frame's worth beyond the last timestamp, so the rate is frames per
      * second of clip rather than per gap between first and last. */
-    uint32_t dur_ms = span_ms + (n_frames > 1 ? span_ms / (n_frames - 1) : 1000 / VIDEO_FPS);
+    uint32_t dur_ms = span_ms + (n_frames > 1 ? span_ms / (n_frames - 1) : 1000000 / sensor_mfps);
     uint32_t fps_x10 = dur_ms ? (uint32_t)((uint64_t)n_frames * 10000 / dur_ms) : 0;
 
     ESP_LOGI(TAG, "recorded %" PRIu32 " frames (%" PRIu32 " IDR, %" PRIu32 " failed) "
              "in %" PRIu32 " ms - %" PRIu32 ".%" PRIu32 " fps, stopped on: %s",
              n_frames, n_idr, n_failed, dur_ms, fps_x10 / 10, fps_x10 % 10, stop_reason);
-    ESP_LOGI(TAG, "encode %" PRIu32 " us mean, %" PRIu32 " us worst (%d us per frame available)",
-             (uint32_t)(encode_us_total / n_frames), encode_us_max, 1000000 / VIDEO_FPS);
+    ESP_LOGI(TAG, "encode %" PRIu32 " us mean, %" PRIu32 " us worst (%" PRIu32 " us per frame available)",
+             (uint32_t)(encode_us_total / n_frames), encode_us_max, (uint32_t)(1000000000ull / sensor_mfps));
     ESP_LOGI(TAG, "clip %u bytes = %" PRIu32 " kbit/s actual (asked for %d)",
              (unsigned)rec_len,
              dur_ms ? (uint32_t)((uint64_t)rec_len * 8 / dur_ms) : 0, VIDEO_BITRATE / 1000);

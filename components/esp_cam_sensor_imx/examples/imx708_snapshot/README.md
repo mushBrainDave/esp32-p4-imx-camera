@@ -30,8 +30,8 @@ stack per mode so each one gets a pipeline built for its own geometry:
   reboot. This is the demonstration that resolution is an application's choice
   at run time; the `#define`s above exist only because nothing else fed the
   index in. The same prompt also sets the flips (`h`, `v`, `n` to clear) and
-  the exposure (`-` and `+` for a stop either way, `a` back to auto), each one
-  keystroke, each applied to the next capture.
+  the exposure (`-` and `+` for a stop either way, `a` back to auto) and the
+  frame rate (`f`), each one keystroke, each applied to the next capture.
 - **`MODE_CYCLE`** walks the whole mode table off one boot, largest to
   smallest. Five frames of one scene at one lens position is the only honest
   way to compare modes — separate runs differ by exposure and framing as much
@@ -79,6 +79,37 @@ deliberately dark frame is also the least noisy one available at that light.
 A bias the hardware cannot reach is clamped and says so, naming the range that
 ran out.
 
+### Frame rate
+
+`f` cycles the sensor's frame length: the mode's own (2672 lines, 28 fps), then
+4990 (15 fps), 7485 (10 fps) and 1336 (56 fps, the sensor's floor), round
+again. It goes through `imx708_set_frame_length()`, applied *after*
+`VIDIOC_STREAMON` because the control is live and a running stream is the case
+worth proving. The frame length goes into the file name (`_fl4990`), and the
+log reports the rate actually delivered, timed across DQBUFs, beside the
+exposure ceiling V4L2 now advertises:
+
+```
+frame length 4990 lines (range 1336..65535), V4L2 exposure 4..4942 step 2
+measured 15.000 fps (45 frames in 3000 ms)
+```
+
+```bash
+# 28, 15, 10 and 56 fps at 640x480
+python tools/capture.py --flash --seconds 240 --keys "4,f,4,f,4,f,4,q" --out fps
+```
+
+Measured 2026-09-25: every rate lands on `74847 / lines` to three decimals, and
+every mode is clean at 56 fps **except 640x480, which tears from 48 fps up**
+(clean at 40) — frames arrive on time but assembled from shifted pieces, with
+nothing logged. 800x600 and larger are clean at 56, so it is neither the
+sensor nor readout blanking; it is somewhere downstream in the P4 path, and not
+yet explained.
+
+A longer frame here does not brighten the picture: AE's exposure ceiling is
+read once, when `esp_video_init()` builds the pipeline, so only a manually set
+exposure can use the extra room.
+
 **Copy-pasteable commands for each mode** are in
 [`docs/cli-cookbook.md`](../../../../docs/cli-cookbook.md#resolution-modes),
 with the measured frame sizes. If you installed this from the component
@@ -87,7 +118,8 @@ section covers `menuconfig` and the scripted equivalent.
 
 Every mode is a centred digital crop of the same 2×2-binned 2304×1296 readout,
 so they all run at 28 fps with the same exposure range, and a smaller one costs
-field of view rather than buying frame rate. Nothing is scaled — the sensor's
+field of view rather than buying frame rate (frame rate is its own control -
+see above). Nothing is scaled — the sensor's
 scaling block is read-only, so 640x480 is a narrow window on the middle of the
 scene, not the scene shrunk.
 
