@@ -723,6 +723,18 @@ static int s_ev_bias = 0;
 #define EV_SETTLE_FRAMES    4
 
 /*
+ * Frame length for the next capture, cycled from the console with f. Index 0
+ * is "leave the mode alone"; the rest are 15, 10 and 56 fps at the binned
+ * modes' 13.361 us line (lines = 74847 / fps). 56 is the sensor's floor.
+ *
+ * Applied after STREAMON on purpose: the control is meant to be live, and
+ * setting it on a running stream is the case worth proving. It has to come
+ * after VIDIOC_S_SENSOR_FMT regardless, which restores the mode's own value.
+ */
+static const uint32_t s_frame_lengths[] = { 0, 4990, 7485, 1336 };
+static int s_frame_length_idx = 0;
+
+/*
  * Exposure and gain are USER-class controls, unlike focus, which is
  * CAMERA-class. Getting the class wrong is not an error - it is a lookup that
  * quietly finds nothing.
@@ -1016,6 +1028,24 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
     }
     ioctl(fd, VIDIOC_STREAMON, &type);
 
+    {
+        uint32_t fl = s_frame_lengths[s_frame_length_idx], now = 0, fl_min = 0, fl_max = 0;
+        if (fl != 0) {
+            esp_err_t e = imx708_set_frame_length(fl);
+            if (e != ESP_OK) {
+                ESP_LOGE(TAG, "imx708_set_frame_length(%" PRIu32 ") failed: %s", fl, esp_err_to_name(e));
+            }
+        }
+        imx708_get_frame_length(&now, &fl_min, &fl_max);
+        /* Read back through V4L2, not the driver: the exposure ceiling esp_video
+           advertises is what AE and every application actually see. */
+        struct v4l2_query_ext_ctrl q = { .id = V4L2_CID_EXPOSURE };
+        ioctl(fd, VIDIOC_QUERY_EXT_CTRL, &q);
+        ESP_LOGI(TAG, "frame length %" PRIu32 " lines (range %" PRIu32 "..%" PRIu32
+                 "), V4L2 exposure %" PRId64 "..%" PRId64 " step %" PRIu64,
+                 now, fl_min, fl_max, (int64_t)q.minimum, (int64_t)q.maximum, (uint64_t)q.step);
+    }
+
 #if TEST_PATTERN
     {
         struct v4l2_ext_control c = { .id = V4L2_CID_TEST_PATTERN, .value = 1 };
@@ -1061,9 +1091,23 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
      * decided focus position.
      */
     int focus_prev = focus_start;
+    /*
+     * Frame rate as delivered, over the second half of the window so a
+     * frame-length change made at STREAMON has long since taken. DQBUF
+     * intervals, not v4l2_buffer.sequence, which esp_video never fills in.
+     */
+    uint32_t rate_from = t_end - settle_s * 500, rate_t0 = 0, rate_t1 = 0, rate_n = 0;
     do {
         buf = (struct v4l2_buffer){ .type = type, .memory = V4L2_MEMORY_MMAP };
         if (ioctl(fd, VIDIOC_DQBUF, &buf) != 0) { ESP_LOGE(TAG, "DQBUF failed"); goto done; }
+        uint32_t t_now = esp_log_timestamp();
+        if (t_now >= rate_from) {
+            if (rate_n == 0) {
+                rate_t0 = t_now;
+            }
+            rate_t1 = t_now;
+            rate_n++;
+        }
         if (focus_start >= 0) {
             int focus_now = focus_get(fd);
             /*
@@ -1081,6 +1125,12 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
             ioctl(fd, VIDIOC_QBUF, &buf);            /* discard, keep streaming */
         }
     } while (esp_log_timestamp() < t_end);
+
+    if (rate_n > 1 && rate_t1 > rate_t0) {
+        uint32_t mfps = (uint32_t)((uint64_t)(rate_n - 1) * 1000000 / (rate_t1 - rate_t0));
+        ESP_LOGI(TAG, "measured %" PRIu32 ".%03" PRIu32 " fps (%" PRIu32 " frames in %" PRIu32 " ms)",
+                 mfps / 1000, mfps % 1000, rate_n - 1, rate_t1 - rate_t0);
+    }
 
     /*
      * After the settle window, not before it: the bias is relative to AE's
@@ -1237,8 +1287,8 @@ static void apply_flip(int fd)
 
 static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
 {
-    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d ev%+d) ====",
-             index, want->name, s_hmirror, s_vflip, s_ev_bias);
+    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d ev%+d fl=%" PRIu32 ") ====",
+             index, want->name, s_hmirror, s_vflip, s_ev_bias, s_frame_lengths[s_frame_length_idx]);
 
     if (esp_video_init(&cam_config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed on mode %d", index);
@@ -1264,13 +1314,17 @@ static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
          * write every frame over the last one, and the whole point of it is
          * having the frames side by side.
          */
-        char name[48];
+        char name[64];
         char ev[8] = "";
+        char fl[16] = "";
         if (s_ev_bias != 0) {
             snprintf(ev, sizeof(ev), "_ev%+d", s_ev_bias);
         }
-        snprintf(name, sizeof(name), "imx708_%ux%u%s%s%s", want->width, want->height,
-                 s_hmirror ? "_h" : "", s_vflip ? "_v" : "", ev);
+        if (s_frame_lengths[s_frame_length_idx] != 0) {
+            snprintf(fl, sizeof(fl), "_fl%" PRIu32, s_frame_lengths[s_frame_length_idx]);
+        }
+        snprintf(name, sizeof(name), "imx708_%ux%u%s%s%s%s", want->width, want->height,
+                 s_hmirror ? "_h" : "", s_vflip ? "_v" : "", ev, fl);
         capture_at_current_mode(fd, name, AIM_SECONDS);
     }
 
@@ -1312,7 +1366,8 @@ static void mode_console_loop(void)
     printf("\nType a digit to capture that mode, q to finish.\n"
            "  h / v   toggle horizontal / vertical flip, n clears both\n"
            "  - / +   expose one stop darker / brighter than AE, a returns to auto\n"
-           "          (d and b are dash-free aliases for - and +, for --keys)\n");
+           "          (d and b are dash-free aliases for - and +, for --keys)\n"
+           "  f       cycle frame rate: mode default, 15, 10, 56 fps\n");
     for (int i = 0; ; i++) {
         const esp_cam_sensor_format_t *f = imx708_format_by_index(i);
         if (f == NULL) {
@@ -1328,7 +1383,8 @@ static void mode_console_loop(void)
         int index = -1;
         bool flip_changed = false;
         bool ev_changed = false;
-        while (index < 0 && !flip_changed && !ev_changed) {
+        bool fl_changed = false;
+        while (index < 0 && !flip_changed && !ev_changed && !fl_changed) {
             unsigned char c;
             if (read(STDIN_FILENO, &c, 1) != 1) {
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -1368,6 +1424,9 @@ static void mode_console_loop(void)
             } else if (c == 'a' || c == 'A') {
                 s_ev_bias = 0;
                 ev_changed = true;
+            } else if (c == 'f' || c == 'F') {
+                s_frame_length_idx = (s_frame_length_idx + 1) % (int)(sizeof(s_frame_lengths) / sizeof(s_frame_lengths[0]));
+                fl_changed = true;
             } else if (c >= '0' && c <= '9') {
                 index = c - '0';
             }
@@ -1380,6 +1439,15 @@ static void mode_console_loop(void)
         if (ev_changed) {
             printf("exposure -> %+d stop%s\n", s_ev_bias,
                    s_ev_bias == 0 ? " (auto, AE decides)" : " from AE");
+            continue;
+        }
+        if (fl_changed) {
+            uint32_t fl = s_frame_lengths[s_frame_length_idx];
+            if (fl == 0) {
+                printf("frame length -> mode default\n");
+            } else {
+                printf("frame length -> %" PRIu32 " lines (~%" PRIu32 " fps)\n", fl, (74847 + fl / 2) / fl);
+            }
             continue;
         }
         printf("%d\n", index);
