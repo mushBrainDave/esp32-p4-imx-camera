@@ -440,6 +440,8 @@ typedef struct {
     uint32_t gain_index;        /*!< index into imx708_total_gain_val_map */
     uint8_t  hmirror;           /*!< 0x0101 bit 0 */
     uint8_t  vflip;             /*!< 0x0101 bit 1 */
+    uint8_t  test_pattern;      /*!< imx708_test_pattern_t; re-asserted by set_format */
+    uint16_t test_colour[4];    /*!< R, Gr, B, Gb levels for the solid pattern */
     esp_cam_sensor_format_t   format;
     esp_cam_sensor_isp_info_t isp_info;
 } imx708_para_t;
@@ -504,6 +506,40 @@ static esp_err_t imx708_set_stream(esp_cam_sensor_device_t *dev, int enable)
     dev->stream_status = enable;
     ESP_LOGD(TAG, "stream=%d", enable);
     return ret;
+}
+
+/*
+ * The sensor NACKs I2C while it resets, for longer than a fixed wait covers:
+ * 10 ms was enough most times and not all (measured - the first common-register
+ * write after it was refused). So wait, then poll the chip ID until it answers.
+ * A slow reset therefore logs i2c.master NACK errors before the line saying
+ * the sensor came back; those are the poll, not a fault.
+ */
+#define IMX708_SW_RESET_WAIT_MS     10
+#define IMX708_SW_RESET_POLL_MS     5
+#define IMX708_SW_RESET_TIMEOUT_MS  100
+
+static esp_err_t imx708_soft_reset(esp_cam_sensor_device_t *dev)
+{
+    esp_err_t ret = imx708_write(dev->sccb_handle, IMX708_REG_SW_RESET, 0x01);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "soft reset write failed");
+    delay_ms(IMX708_SW_RESET_WAIT_MS);
+
+    for (int waited = IMX708_SW_RESET_WAIT_MS; ; waited += IMX708_SW_RESET_POLL_MS) {
+        uint8_t h = 0;
+        ret = imx708_read(dev->sccb_handle, IMX708_REG_CHIP_ID_H, &h);
+        if (ret == ESP_OK && h == (IMX708_CHIP_ID >> 8)) {
+            if (waited > IMX708_SW_RESET_WAIT_MS) {
+                ESP_LOGI(TAG, "sensor back from soft reset after %d ms", waited);
+            }
+            return ESP_OK;
+        }
+        if (waited >= IMX708_SW_RESET_TIMEOUT_MS) {
+            ESP_LOGE(TAG, "sensor not back %d ms after soft reset", waited);
+            return ret == ESP_OK ? ESP_ERR_TIMEOUT : ret;
+        }
+        delay_ms(IMX708_SW_RESET_POLL_MS);
+    }
 }
 
 static esp_err_t imx708_hw_reset(esp_cam_sensor_device_t *dev)
@@ -866,10 +902,78 @@ static esp_err_t imx708_set_digital_gain(esp_cam_sensor_device_t *dev, uint32_t 
     return imx708_write16(dev->sccb_handle, IMX708_REG_DIGITAL_GAIN_H, (uint16_t)val);
 }
 
-static esp_err_t imx708_set_test_pattern(esp_cam_sensor_device_t *dev, int enable)
+/* V4L2 menu index (imx708_test_pattern_t) -> 0x0600 value. The two orders
+   differ: the menu puts bars first, the register puts solid colour first. */
+static const uint16_t imx708_test_pattern_reg[] = {
+    [IMX708_TEST_PATTERN_OFF]        = IMX708_TP_REG_DISABLE,
+    [IMX708_TEST_PATTERN_COLOR_BARS] = IMX708_TP_REG_COLOR_BARS,
+    [IMX708_TEST_PATTERN_SOLID]      = IMX708_TP_REG_SOLID,
+    [IMX708_TEST_PATTERN_GREY_BARS]  = IMX708_TP_REG_GREY_BARS,
+    [IMX708_TEST_PATTERN_PN9]        = IMX708_TP_REG_PN9,
+};
+
+static const uint16_t imx708_test_colour_reg[4] = {
+    IMX708_REG_TEST_PATTERN_R, IMX708_REG_TEST_PATTERN_GR,
+    IMX708_REG_TEST_PATTERN_B, IMX708_REG_TEST_PATTERN_GB,
+};
+
+/*
+ * Write the shadowed pattern and levels to the sensor. The levels go first, so
+ * a switch to the solid pattern never shows a frame of the previous colour.
+ * set_format soft-resets the sensor, which clears 0x0600-0x0609, and calls this
+ * afterwards - that is what carries a pattern across a mode change.
+ */
+static esp_err_t imx708_apply_test_pattern(esp_cam_sensor_device_t *dev)
 {
-    return imx708_write16(dev->sccb_handle, IMX708_REG_TEST_PATTERN_H,
-                          enable ? IMX708_TEST_PATTERN_COLORBARS : IMX708_TEST_PATTERN_DISABLE);
+    const imx708_para_t *para = (const imx708_para_t *)dev->priv;
+    esp_err_t ret = ESP_OK;
+
+    for (size_t i = 0; i < ARRAY_SIZE(imx708_test_colour_reg) && ret == ESP_OK; i++) {
+        ret = imx708_write16(dev->sccb_handle, imx708_test_colour_reg[i], para->test_colour[i]);
+    }
+    if (ret == ESP_OK) {
+        ret = imx708_write16(dev->sccb_handle, IMX708_REG_TEST_PATTERN_H,
+                             imx708_test_pattern_reg[para->test_pattern]);
+    }
+    return ret;
+}
+
+static esp_err_t imx708_set_test_pattern(esp_cam_sensor_device_t *dev, int pattern)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+
+    if (para == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (pattern < 0 || pattern >= (int)ARRAY_SIZE(imx708_test_pattern_reg)) {
+        ESP_LOGE(TAG, "test pattern %d out of range (0..%d)", pattern,
+                 (int)ARRAY_SIZE(imx708_test_pattern_reg) - 1);
+        return ESP_ERR_INVALID_ARG;
+    }
+    imx708_lock(dev);
+    para->test_pattern = (uint8_t)pattern;
+    esp_err_t ret = imx708_write16(dev->sccb_handle, IMX708_REG_TEST_PATTERN_H,
+                                   imx708_test_pattern_reg[pattern]);
+    imx708_unlock(dev);
+    return ret;
+}
+
+/* channel: 0..3 = R, Gr, B, Gb, the order of test_colour[]. */
+static esp_err_t imx708_set_test_colour(esp_cam_sensor_device_t *dev, size_t channel, uint32_t level)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+
+    if (para == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (level > IMX708_TEST_PATTERN_COLOUR_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    imx708_lock(dev);
+    para->test_colour[channel] = (uint16_t)level;
+    esp_err_t ret = imx708_write16(dev->sccb_handle, imx708_test_colour_reg[channel], (uint16_t)level);
+    imx708_unlock(dev);
+    return ret;
 }
 
 static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_sensor_param_desc_t *qdesc)
@@ -903,6 +1007,16 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
         qdesc->number.step = 1;
         qdesc->default_value = (dev && dev->priv)
                                ? ((imx708_para_t *)dev->priv)->frame_length_default : IMX708_VTS;
+        break;
+    case IMX708_CID_TEST_PATTERN_RED:
+    case IMX708_CID_TEST_PATTERN_GREENR:
+    case IMX708_CID_TEST_PATTERN_BLUE:
+    case IMX708_CID_TEST_PATTERN_GREENB:
+        qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
+        qdesc->number.minimum = 0;
+        qdesc->number.maximum = IMX708_TEST_PATTERN_COLOUR_MAX;
+        qdesc->number.step = 1;
+        qdesc->default_value = IMX708_TEST_PATTERN_COLOUR_MAX;
         break;
     case ESP_CAM_SENSOR_GAIN:
         /* Menu control: elements are total gain in milli-units, and the value
@@ -957,6 +1071,12 @@ static esp_err_t imx708_get_para_value(esp_cam_sensor_device_t *dev, uint32_t id
         break;
     case IMX708_CID_FRAME_LENGTH:
         *(uint32_t *)arg = imx708_frame_length(dev);
+        break;
+    case IMX708_CID_TEST_PATTERN_RED:
+    case IMX708_CID_TEST_PATTERN_GREENR:
+    case IMX708_CID_TEST_PATTERN_BLUE:
+    case IMX708_CID_TEST_PATTERN_GREENB:
+        *(uint32_t *)arg = para->test_colour[id - IMX708_CID_TEST_PATTERN_RED];
         break;
     default:
         return ESP_ERR_NOT_SUPPORTED;
@@ -1017,6 +1137,12 @@ static esp_err_t imx708_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id
         break;
     case IMX708_CID_FRAME_LENGTH:
         ret = imx708_apply_frame_length(dev, *(const uint32_t *)arg);
+        break;
+    case IMX708_CID_TEST_PATTERN_RED:
+    case IMX708_CID_TEST_PATTERN_GREENR:
+    case IMX708_CID_TEST_PATTERN_BLUE:
+    case IMX708_CID_TEST_PATTERN_GREENB:
+        ret = imx708_set_test_colour(dev, id - IMX708_CID_TEST_PATTERN_RED, *(const uint32_t *)arg);
         break;
     default:
         ESP_LOGE(TAG, "set id=%" PRIx32 " not supported", id);
@@ -1161,6 +1287,17 @@ static esp_err_t imx708_set_format_locked(esp_cam_sensor_device_t *dev, const es
     /* common -> mode -> link freq, the order the sensor is brought up in. The
        mode table carries the rest of the PLL block, so the link multiplier has
        to land after it or the mode's own PLL values fight it. */
+    /*
+     * Start from power-on state. Nothing else resets this sensor (trap 11), and
+     * the tables below only overwrite the registers they name, so without this
+     * a mode is programmed on top of whatever the last boot or mode left. That
+     * has been measured to wedge the sensor: I2C answers, mode setup succeeds,
+     * and no frame ever reaches the CSI receiver - not even after reflashing a
+     * build that had worked for days. The reset cleared it at once.
+     */
+    ret = imx708_soft_reset(dev);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "soft reset failed");
+
     ret = imx708_write_array(dev->sccb_handle, imx708_common_regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write common regs failed");
 
@@ -1175,9 +1312,10 @@ static esp_err_t imx708_set_format_locked(esp_cam_sensor_device_t *dev, const es
 
     /*
      * The mode table writes the frame length but not the long-exposure shift,
-     * and neither a P4 reset nor a mode change resets the sensor, so a shift
-     * left over from a long frame would otherwise multiply the new mode's
-     * frame and exposure by up to 128. The shadow is rebuilt unshifted below.
+     * so a shift left over from a long frame would multiply the new mode's
+     * frame and exposure by up to 128. The soft reset above already cleared
+     * it; this stays so that stays true if the reset ever goes. The shadow is
+     * rebuilt unshifted below.
      */
     ret = imx708_write(dev->sccb_handle, IMX708_REG_LONG_EXP_SHIFT, 0);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "clear long-exposure shift failed");
@@ -1185,6 +1323,9 @@ static esp_err_t imx708_set_format_locked(esp_cam_sensor_device_t *dev, const es
     /* Binned modes don't re-mosaic, so the quad-Bayer LPF stays off. */
     ret = imx708_write(dev->sccb_handle, IMX708_REG_LPF_INTENSITY_EN, IMX708_LPF_INTENSITY_DISABLED);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "disable quad-bayer LPF failed");
+
+    ret = imx708_apply_test_pattern(dev);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "apply test pattern failed");
 
     ret = imx708_select_format(dev, format);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "no device state to shadow the format into");
@@ -1244,6 +1385,9 @@ static esp_err_t imx708_priv_ioctl(esp_cam_sensor_device_t *dev, uint32_t cmd, v
     switch (cmd) {
     case ESP_CAM_SENSOR_IOC_HW_RESET:
         ret = imx708_hw_reset(dev);
+        break;
+    case ESP_CAM_SENSOR_IOC_SW_RESET:
+        ret = imx708_soft_reset(dev);
         break;
     case ESP_CAM_SENSOR_IOC_S_STREAM:
         ret = imx708_set_stream(dev, *(int *)arg);
@@ -1313,10 +1457,10 @@ static esp_err_t imx708_power_off(esp_cam_sensor_device_t *dev)
 }
 
 /*
- * The detected sensor, for the frame-length functions in imx708.h. esp_video
- * detects the sensor itself and keeps the handle private, so an application
- * built on it has no esp_cam_sensor_device_t to pass - and the frame length is
- * a control esp_video has no V4L2 mapping for. The P4 has one CSI port, so
+ * The detected sensor, for the frame-length and test-pattern-colour functions
+ * in imx708.h. esp_video detects the sensor itself and keeps the handle
+ * private, so an application built on it has no esp_cam_sensor_device_t to
+ * pass - and both are controls esp_video has no V4L2 mapping for. The P4 has one CSI port, so
  * there is one of these at most.
  */
 static esp_cam_sensor_device_t *s_imx708_dev;
@@ -1368,6 +1512,27 @@ esp_err_t imx708_get_frame_length(uint32_t *lines, uint32_t *min, uint32_t *max)
     return ESP_OK;
 }
 
+esp_err_t imx708_set_test_pattern_colour(uint16_t r, uint16_t gr, uint16_t b, uint16_t gb)
+{
+    const uint16_t level[4] = { r, gr, b, gb };
+    esp_cam_sensor_device_t *dev = s_imx708_dev;
+
+    if (dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* All or nothing: check every level before writing any. */
+    for (size_t i = 0; i < ARRAY_SIZE(level); i++) {
+        if (level[i] > IMX708_TEST_PATTERN_COLOUR_MAX) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+    esp_err_t ret = ESP_OK;
+    for (size_t i = 0; i < ARRAY_SIZE(level) && ret == ESP_OK; i++) {
+        ret = imx708_set_test_colour(dev, i, level[i]);
+    }
+    return ret;
+}
+
 static const esp_cam_sensor_ops_t imx708_ops = {
     .query_para_desc = imx708_query_para_desc,
     .get_para_value = imx708_get_para_value,
@@ -1392,6 +1557,9 @@ esp_cam_sensor_device_t *imx708_detect(esp_cam_sensor_config_t *config)
         return NULL;
     }
     dev->priv = (uint8_t *)dev + sizeof(esp_cam_sensor_device_t);
+    for (size_t i = 0; i < ARRAY_SIZE(imx708_test_colour_reg); i++) {
+        ((imx708_para_t *)dev->priv)->test_colour[i] = IMX708_TEST_PATTERN_COLOUR_MAX; /* Linux's default */
+    }
 
     dev->name = (char *)IMX708_SENSOR_NAME;
     dev->sccb_handle = config->sccb_handle;

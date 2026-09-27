@@ -24,6 +24,7 @@ extern "C" {
 
 /* Core control */
 #define IMX708_REG_MODE_SELECT      0x0100  /*!< 0=standby, 1=streaming */
+#define IMX708_REG_SW_RESET         0x0103  /*!< write 1: every register back to power-on */
 #define IMX708_REG_ORIENTATION      0x0101  /*!< bit0 = h flip, bit1 = v flip */
 #define IMX708_ORIENTATION_HMIRROR  0x01
 #define IMX708_ORIENTATION_VFLIP    0x02
@@ -196,11 +197,22 @@ extern "C" {
 #define IMX708_LPF_INTENSITY_ENABLED   0x00
 #define IMX708_LPF_INTENSITY_DISABLED  0x01
 
-/* Test pattern */
+/* Test pattern. Register values, not the V4L2 menu order - imx708.c maps
+   imx708_test_pattern_t onto these. */
 #define IMX708_REG_TEST_PATTERN_H   0x0600
 #define IMX708_REG_TEST_PATTERN_L   0x0601
-#define IMX708_TEST_PATTERN_DISABLE 0x0000
-#define IMX708_TEST_PATTERN_COLORBARS 0x0002
+#define IMX708_TP_REG_DISABLE       0x0000
+#define IMX708_TP_REG_SOLID         0x0001
+#define IMX708_TP_REG_COLOR_BARS    0x0002
+#define IMX708_TP_REG_GREY_BARS     0x0003
+#define IMX708_TP_REG_PN9           0x0004
+
+/* Solid-colour pattern, one 12-bit level per Bayer channel, 16-bit registers */
+#define IMX708_REG_TEST_PATTERN_R   0x0602
+#define IMX708_REG_TEST_PATTERN_GR  0x0604
+#define IMX708_REG_TEST_PATTERN_B   0x0606
+#define IMX708_REG_TEST_PATTERN_GB  0x0608
+#define IMX708_TEST_PATTERN_COLOUR_MAX 0x0fff
 
 /* External input clock */
 #define IMX708_INCLK_FREQ_HZ        24000000

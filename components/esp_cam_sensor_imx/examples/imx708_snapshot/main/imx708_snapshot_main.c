@@ -248,31 +248,22 @@
 /*
  * Bring-up switches.
  *
- * TEST_PATTERN: ask the sensor for its internal colour bars. The bars are
- * generated after the pixel array, so they travel the whole MIPI -> CSI -> ISP
- * path. If the BMP shows clean bars, the transport is healthy and any bad
- * picture is optics/exposure/ISP tuning. If the bars are noise too, the fault
- * is upstream of the ISP (link rate, lane count, data type, sensor mode).
+ * The sensor's test patterns are a console key now (t), not a build switch -
+ * see s_test_pattern.
  *
  * POISON_BUFFERS: fill each capture buffer with a known byte before streaming
  * and count how much of it survives the capture. A frame that comes back ~100%
  * poison means nothing was DMA'd into it, and the "image" is just untouched
  * PSRAM rather than a corrupted photo.
  *
- * Note on the colour bars: the sensor's pattern generator clips them to its
- * own test-pattern window (regs 0x0620-0x0627, left at power-on defaults), so
- * the bars come out cropped at the left and right edges even when the capture
- * path is perfect. Judge transport health by the bars that ARE drawn being
- * clean and correctly placed, not by them reaching the frame edges.
  */
 
 /*
- * These three were described in the comment above but never actually defined,
- * so every `#if TEST_PATTERN` / `#if POISON_BUFFERS` below silently evaluated
- * to 0: an undefined identifier is 0 in a preprocessor conditional, with no
- * warning at default settings. The bring-up switches have been dead code.
+ * These were described in the comment above but never actually defined, so
+ * every `#if POISON_BUFFERS` below silently evaluated to 0: an undefined
+ * identifier is 0 in a preprocessor conditional, with no warning at default
+ * settings. The bring-up switches had been dead code.
  */
-#define TEST_PATTERN        0
 #define POISON_BUFFERS      0
 #define POISON_BYTE         0xa5
 
@@ -738,6 +729,28 @@ static const uint32_t s_frame_lengths[] = { 0, 4990, 7485, 1336, 149694 };
 static int s_frame_length_idx = 0;
 
 /*
+ * Sensor test pattern for the next capture, cycled from the console with t,
+ * indexed by imx708_test_pattern_t. Each is generated after the pixel array, so
+ * it travels the whole MIPI -> CSI -> ISP path: clean bars mean the transport
+ * is healthy and a bad picture is optics, exposure or ISP tuning; bars that
+ * come out as noise put the fault upstream of the ISP.
+ *
+ * The generator clips to its own window (0x0620-0x0627, left at power-on
+ * defaults), so bars can stop short of the frame edges on a perfect link.
+ * Judge the bars that are drawn, not whether they reach the edge.
+ *
+ * "Fade" is Sony's fade-to-grey bars: the fade runs down the full sensor
+ * height, so a small crop shows only a step or two of it. PN9 is noise by
+ * design once through the ISP; it earns its keep on raw frames, compared frame
+ * to frame, so it is sent raw rather than as JPEG. AWB still runs, so the
+ * solid colour's hue is not quite the levels it was given.
+ */
+static const char *const s_test_pattern_names[] = {
+    "off", "colour bars", "solid colour", "fade-to-grey bars", "PN9",
+};
+static int s_test_pattern = IMX708_TEST_PATTERN_OFF;
+
+/*
  * Exposure and gain are USER-class controls, unlike focus, which is
  * CAMERA-class. Getting the class wrong is not an error - it is a lookup that
  * quietly finds nothing.
@@ -1049,17 +1062,27 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
                  now, fl_min, fl_max, (int64_t)q.minimum, (int64_t)q.maximum, (uint64_t)q.step);
     }
 
-#if TEST_PATTERN
     {
-        struct v4l2_ext_control c = { .id = V4L2_CID_TEST_PATTERN, .value = 1 };
+        /*
+         * A stream that stops delivering should say so, not hang the console:
+         * esp_video's DQBUF otherwise waits forever.
+         */
+        struct timeval tmo = { .tv_sec = 2 };
+        ioctl(fd, VIDIOC_S_DQBUF_TIMEOUT, &tmo);
+    }
+    {
+        /* Set even when off: the driver keeps a pattern across mode changes. */
+        if (s_test_pattern == IMX708_TEST_PATTERN_SOLID) {
+            imx708_set_test_pattern_colour(0xfff, 0x600, 0x100, 0x600); /* orange, before AWB */
+        }
+        struct v4l2_ext_control c = { .id = V4L2_CID_TEST_PATTERN, .value = s_test_pattern };
         struct v4l2_ext_controls cs = { .ctrl_class = V4L2_CTRL_CLASS_USER, .count = 1, .controls = &c };
         if (ioctl(fd, VIDIOC_S_EXT_CTRLS, &cs) != 0) {
-            ESP_LOGW(TAG, "test pattern not accepted - capturing the live scene instead");
-        } else {
-            ESP_LOGW(TAG, "SENSOR TEST PATTERN ON - expect colour bars, not a photo");
+            ESP_LOGE(TAG, "test pattern %d not accepted", s_test_pattern);
+        } else if (s_test_pattern != IMX708_TEST_PATTERN_OFF) {
+            ESP_LOGW(TAG, "SENSOR TEST PATTERN: %s - not a photo", s_test_pattern_names[s_test_pattern]);
         }
     }
-#endif
 
     /*
      * Where the lens is before anything has adjusted it. A -1 here means the
@@ -1102,7 +1125,10 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
     uint32_t rate_from = t_end - settle_s * 500, rate_t0 = 0, rate_t1 = 0, rate_n = 0;
     do {
         buf = (struct v4l2_buffer){ .type = type, .memory = V4L2_MEMORY_MMAP };
-        if (ioctl(fd, VIDIOC_DQBUF, &buf) != 0) { ESP_LOGE(TAG, "DQBUF failed"); goto done; }
+        if (ioctl(fd, VIDIOC_DQBUF, &buf) != 0) {
+            ESP_LOGE(TAG, "DQBUF: no frame in 2 s - the stream has stopped");
+            goto done;
+        }
         uint32_t t_now = esp_log_timestamp();
         if (t_now >= rate_from) {
             if (rate_n == 0) {
@@ -1217,7 +1243,13 @@ static void capture_at_current_mode(int fd, const char *name, int settle_s)
 #endif
     {
         const uint8_t *frame = stage_frame(fd, &buf, w, h, buffer);
-        emit_frame(name, frame, w, h, false);
+        /*
+         * PN9 goes raw. It is noise, so it cannot compress: at q90 the P4's
+         * JPEG engine outruns its output buffer, times out, and IDF then
+         * asserts in dma2d_force_end and reboots the board (measured). And a
+         * JPEG of PN9 would be useless anyway - the point is exact values.
+         */
+        emit_frame(name, frame, w, h, s_test_pattern == IMX708_TEST_PATTERN_PN9);
 #if IMAGE_OUT_SD
         save_bmp565(OUT_PATH, frame, w, h);
 #endif
@@ -1290,8 +1322,9 @@ static void apply_flip(int fd)
 
 static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
 {
-    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d ev%+d fl=%" PRIu32 ") ====",
-             index, want->name, s_hmirror, s_vflip, s_ev_bias, s_frame_lengths[s_frame_length_idx]);
+    ESP_LOGI(TAG, "==== mode %d: %s (hmirror=%d vflip=%d ev%+d fl=%" PRIu32 " tp=%d) ====",
+             index, want->name, s_hmirror, s_vflip, s_ev_bias, s_frame_lengths[s_frame_length_idx],
+             s_test_pattern);
 
     if (esp_video_init(&cam_config) != ESP_OK) {
         ESP_LOGE(TAG, "esp_video_init failed on mode %d", index);
@@ -1370,7 +1403,8 @@ static void mode_console_loop(void)
            "  h / v   toggle horizontal / vertical flip, n clears both\n"
            "  - / +   expose one stop darker / brighter than AE, a returns to auto\n"
            "          (d and b are dash-free aliases for - and +, for --keys)\n"
-           "  f       cycle frame rate: mode default, 15, 10, 56 fps, 2 s\n");
+           "  f       cycle frame rate: mode default, 15, 10, 56 fps, 2 s\n"
+           "  t       cycle sensor test pattern: off, colour bars, solid, fade, PN9\n");
     for (int i = 0; ; i++) {
         const esp_cam_sensor_format_t *f = imx708_format_by_index(i);
         if (f == NULL) {
@@ -1387,7 +1421,8 @@ static void mode_console_loop(void)
         bool flip_changed = false;
         bool ev_changed = false;
         bool fl_changed = false;
-        while (index < 0 && !flip_changed && !ev_changed && !fl_changed) {
+        bool tp_changed = false;
+        while (index < 0 && !flip_changed && !ev_changed && !fl_changed && !tp_changed) {
             unsigned char c;
             if (read(STDIN_FILENO, &c, 1) != 1) {
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -1430,6 +1465,9 @@ static void mode_console_loop(void)
             } else if (c == 'f' || c == 'F') {
                 s_frame_length_idx = (s_frame_length_idx + 1) % (int)(sizeof(s_frame_lengths) / sizeof(s_frame_lengths[0]));
                 fl_changed = true;
+            } else if (c == 't' || c == 'T') {
+                s_test_pattern = (s_test_pattern + 1) % (int)(sizeof(s_test_pattern_names) / sizeof(s_test_pattern_names[0]));
+                tp_changed = true;
             } else if (c >= '0' && c <= '9') {
                 index = c - '0';
             }
@@ -1453,6 +1491,10 @@ static void mode_console_loop(void)
                 printf("frame length -> %" PRIu32 " lines (~%" PRIu32 " ms)\n", fl,
                        (uint32_t)(((uint64_t)fl * 13361 + 500000) / 1000000));
             }
+            continue;
+        }
+        if (tp_changed) {
+            printf("test pattern -> %s\n", s_test_pattern_names[s_test_pattern]);
             continue;
         }
         printf("%d\n", index);

@@ -148,6 +148,63 @@ esp_err_t imx708_set_frame_length(uint32_t lines);
  */
 esp_err_t imx708_get_frame_length(uint32_t *lines, uint32_t *min, uint32_t *max);
 
+/**
+ * @brief Values of V4L2_CID_TEST_PATTERN.
+ *
+ * Raspberry Pi's menu order, so a number means the same pattern on both
+ * drivers - and 1 is still colour bars, as it was when bars were the only one.
+ * esp_video passes the control through to the sensor unvalidated; anything
+ * past IMX708_TEST_PATTERN_PN9 fails with ESP_ERR_INVALID_ARG.
+ *
+ * Every pattern is generated after the pixel array, so it travels the whole
+ * MIPI -> CSI -> ISP path. It replaces the image, not the timing: frame
+ * length, exposure and gain are untouched, and it survives a mode change.
+ * The generator clips to its own window (0x0620-0x0627, left at power-on
+ * defaults), so a pattern can stop short of the frame edges on a healthy link.
+ *
+ * PN9 is the one for link integrity: a deterministic pseudo-random sequence,
+ * so corrupted, dropped or duplicated data breaks it where colour bars, being
+ * flat, would hide the damage. It is only checkable on raw Bayer frames that
+ * repeat - compare one frame with the next, or with a known-good capture.
+ * After the ISP's demosaic and tone curve it is just noise.
+ */
+typedef enum {
+    IMX708_TEST_PATTERN_OFF        = 0,
+    IMX708_TEST_PATTERN_COLOR_BARS = 1,
+    IMX708_TEST_PATTERN_SOLID      = 2, /*!< the four levels below, one per Bayer channel */
+    IMX708_TEST_PATTERN_GREY_BARS  = 3, /*!< colour bars fading to grey down the full array height */
+    IMX708_TEST_PATTERN_PN9        = 4,
+} imx708_test_pattern_t;
+
+/**
+ * @brief The solid-colour pattern's per-channel levels, as esp_cam_sensor
+ *        parameters.
+ *
+ * Linux's V4L2_CID_TEST_PATTERN_RED / GREENR / BLUE / GREENB: a uint32_t each,
+ * 0 .. 0xfff (12 bits), default 0xfff - so the solid pattern is white until
+ * told otherwise. For callers holding the sensor handle; esp_video maps no V4L2
+ * control onto them, so an esp_video application uses
+ * imx708_set_test_pattern_colour() instead.
+ */
+#define IMX708_CID_TEST_PATTERN_RED     ESP_CAM_SENSOR_CLASS_ID(ESP_CAM_SENSOR_CID_CLASS_USER, 0x709)
+#define IMX708_CID_TEST_PATTERN_GREENR  ESP_CAM_SENSOR_CLASS_ID(ESP_CAM_SENSOR_CID_CLASS_USER, 0x70a)
+#define IMX708_CID_TEST_PATTERN_BLUE    ESP_CAM_SENSOR_CLASS_ID(ESP_CAM_SENSOR_CID_CLASS_USER, 0x70b)
+#define IMX708_CID_TEST_PATTERN_GREENB  ESP_CAM_SENSOR_CLASS_ID(ESP_CAM_SENSOR_CID_CLASS_USER, 0x70c)
+
+/**
+ * @brief Set the levels IMX708_TEST_PATTERN_SOLID draws.
+ *
+ * Takes effect at once if the solid pattern is showing, and is kept for when it
+ * next is. Pick the pattern itself with V4L2_CID_TEST_PATTERN.
+ *
+ * @param r, gr, b, gb 12-bit levels for the red, green-on-red-row, blue and
+ *                     green-on-blue-row pixels.
+ * @return ESP_OK; ESP_ERR_INVALID_ARG if any level exceeds 0xfff (nothing is
+ *         written); ESP_ERR_INVALID_STATE if no IMX708 has been detected; an
+ *         SCCB error if the write failed.
+ */
+esp_err_t imx708_set_test_pattern_colour(uint16_t r, uint16_t gr, uint16_t b, uint16_t gb);
+
 #ifdef __cplusplus
 }
 #endif
