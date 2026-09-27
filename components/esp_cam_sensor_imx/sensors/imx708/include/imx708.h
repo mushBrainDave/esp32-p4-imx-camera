@@ -78,6 +78,63 @@ const esp_cam_sensor_format_t *imx708_format_by_index(size_t index);
  */
 const esp_cam_sensor_format_t *imx708_format_by_size(uint16_t width, uint16_t height);
 
+/**
+ * @brief Frame length, in lines, as an esp_cam_sensor parameter.
+ *
+ * The same control as imx708_set_frame_length(), for callers holding the
+ * sensor handle: esp_cam_sensor_set_para_value() / get_para_value() with a
+ * uint32_t, and esp_cam_sensor_query_para_desc() for the range. esp_video maps
+ * no V4L2 control onto it, so it is unreachable through VIDIOC_S_EXT_CTRLS.
+ */
+#define IMX708_CID_FRAME_LENGTH  ESP_CAM_SENSOR_CLASS_ID(ESP_CAM_SENSOR_CID_CLASS_USER, 0x708)
+
+/**
+ * @brief Set the frame length (VTS), which sets the frame rate.
+ *
+ * Every current mode has a line time of 13.361 us (7824 pixels at
+ * 585.6 MHz), so fps = 74847 / lines, and lines = 74847 / fps:
+ *
+ *   1336 lines = 56 fps (the floor)   2672 = 28 fps (every mode's default)
+ *   4990 = 15 fps    7485 = 10 fps    65535 = 1.14 fps (the ceiling)
+ *
+ * Out-of-range values are clamped, not rejected; read the value back with
+ * imx708_get_frame_length().
+ *
+ * The sensor delivers every rate in that range. The P4 pipeline behind it,
+ * measured with imx708_snapshot: every mode is clean at 56 fps except
+ * 640x480, whose frames tear from 48 fps up (clean at 40) with nothing logged.
+ *
+ * It is live: safe mid-stream, effective from the next frame. It also moves
+ * the exposure ceiling (frame length - 48 lines), and V4L2_CID_EXPOSURE's
+ * advertised maximum follows at once. Shortening the frame clamps an exposure
+ * that no longer fits.
+ *
+ * Two things it does not do:
+ *  - Raise AE's ceiling. The ISP pipeline reads the exposure range once, at
+ *    esp_video_init(), so a longer frame gives a manually set exposure more
+ *    room but AE keeps to the range it started with. A shorter frame is fine
+ *    - AE's requests are clamped to the live range.
+ *  - Survive a mode change. VIDIOC_S_SENSOR_FMT restores the mode's own frame
+ *    length, so set this after it.
+ *
+ * Applies to the sensor esp_video (or anyone) detected through imx708_detect().
+ *
+ * @param lines Frame length in lines.
+ * @return ESP_OK; ESP_ERR_INVALID_STATE if no IMX708 has been detected or no
+ *         mode set yet; an SCCB error if the write failed.
+ */
+esp_err_t imx708_set_frame_length(uint32_t lines);
+
+/**
+ * @brief Read the frame length in force and the range it may be set to.
+ *
+ * @param lines Current frame length, or NULL.
+ * @param min   Shortest frame the current mode allows, or NULL.
+ * @param max   Longest, or NULL.
+ * @return ESP_OK, or ESP_ERR_INVALID_STATE if no IMX708 has been detected.
+ */
+esp_err_t imx708_get_frame_length(uint32_t *lines, uint32_t *min, uint32_t *max);
+
 #ifdef __cplusplus
 }
 #endif

@@ -13,6 +13,7 @@
 #include <inttypes.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <freertos/semphr.h>
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
@@ -88,11 +89,13 @@ enum {
 typedef struct {
     uint32_t exposure_lines_min;    /*!< shortest integration the mode honours */
     uint32_t exposure_lines_step;   /*!< granularity above that; longer requests round down */
+    uint32_t frame_length_min;      /*!< rows read out plus minimum blanking; the fps ceiling */
 } imx708_mode_ae_t;
 
 static const imx708_mode_ae_t imx708_binned_ae = {
     .exposure_lines_min  = IMX708_EXPOSURE_LINES_MIN_BINNED,
     .exposure_lines_step = IMX708_EXPOSURE_LINES_STEP_BINNED,
+    .frame_length_min    = IMX708_BINNED_READOUT_ROWS + IMX708_VBLANK_MIN_BINNED,
 };
 
 /*
@@ -431,6 +434,8 @@ static const esp_cam_sensor_bayer_pattern_t imx708_bayer_by_flip[4] = {
  * so it is valid for exactly as long as anything can hold a pointer to it.
  */
 typedef struct {
+    SemaphoreHandle_t lock;     /*!< orders exposure against frame-length writes */
+    uint32_t frame_length_default; /*!< the mode's own VTS, what its table writes */
     uint32_t exposure_val;      /*!< current exposure, in lines */
     uint32_t gain_index;        /*!< index into imx708_total_gain_val_map */
     uint8_t  hmirror;           /*!< 0x0101 bit 0 */
@@ -626,8 +631,31 @@ static uint32_t imx708_quantize_exposure(esp_cam_sensor_device_t *dev, uint32_t 
     return lines - (lines % ae->exposure_lines_step);
 }
 
-/* Exposure in lines (16-bit reg 0x0202). */
-static esp_err_t imx708_set_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
+/*
+ * The driver lock, taken around anything that reads the frame length to decide
+ * what to write. Exposure is set from the ISP pipeline's AE task and frame
+ * length from the application's, and without it an exposure clamped against
+ * the old frame length can land just after a shorter one.
+ * No-ops until imx708_detect() has created the lock.
+ */
+static void imx708_lock(esp_cam_sensor_device_t *dev)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+    if (para && para->lock) {
+        xSemaphoreTake(para->lock, portMAX_DELAY);
+    }
+}
+
+static void imx708_unlock(esp_cam_sensor_device_t *dev)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+    if (para && para->lock) {
+        xSemaphoreGive(para->lock);
+    }
+}
+
+/* Exposure in lines (16-bit reg 0x0202). Caller holds the lock. */
+static esp_err_t imx708_write_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
 {
     lines = imx708_quantize_exposure(dev, lines);
 
@@ -640,6 +668,93 @@ static esp_err_t imx708_set_exposure(esp_cam_sensor_device_t *dev, uint32_t line
         ((imx708_para_t *)dev->priv)->exposure_val = lines;
     }
     return ret;
+}
+
+static esp_err_t imx708_set_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
+{
+    imx708_lock(dev);
+    esp_err_t ret = imx708_write_exposure(dev, lines);
+    imx708_unlock(dev);
+    return ret;
+}
+
+/* The frame length in force, in lines. */
+static uint32_t imx708_frame_length(esp_cam_sensor_device_t *dev)
+{
+    if (dev && dev->cur_format && dev->cur_format->isp_info) {
+        return dev->cur_format->isp_info->isp_v1_info.vts;
+    }
+    return IMX708_VTS;
+}
+
+/*
+ * Frame length (VTS, 16-bit reg 0x0340): the frame-rate control, and the
+ * exposure ceiling with it. Linux's V4L2_CID_VBLANK, expressed as the whole
+ * frame rather than the blanking so a caller need not know the readout height.
+ *
+ * Live: it can change mid-stream and takes effect at the next frame boundary.
+ * The value goes into the shadow isp_info.vts, which is what
+ * imx708_exposure_max() reads, so query_para_desc advertises the new exposure
+ * ceiling from the very next query. esp_video re-queries on every exposure
+ * write and the ISP AE loop clamps its request to that live maximum, so a
+ * shorter frame is honoured without anybody having to be told.
+ *
+ * What does *not* follow a longer frame is AE's appetite. The IPA reads the
+ * exposure ceiling once, when esp_video_init() builds the pipeline, and never
+ * asks again, so lengthening the frame afterwards buys headroom for a manually
+ * set exposure but not for AE. See imx708.h.
+ *
+ * set_format puts it back to the mode's own value - the mode table writes
+ * 0x0340 and the shadow is rebuilt from the const table - which is also what
+ * Linux does on a mode change.
+ *
+ * Order matters when the frame shrinks: the exposure is clamped to the new
+ * ceiling and written first, so the sensor is never holding an integration
+ * longer than the frame it is about to get. The register goes as one 16-bit
+ * burst so its halves cannot straddle a frame boundary and briefly program a
+ * frame length nobody asked for.
+ */
+static esp_err_t imx708_apply_frame_length(esp_cam_sensor_device_t *dev, uint32_t lines)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+    const imx708_mode_ae_t *ae = imx708_mode_ae(dev);
+    esp_err_t ret = ESP_OK;
+
+    if (para == NULL || dev->cur_format != &para->format) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (lines < ae->frame_length_min) {
+        lines = ae->frame_length_min;
+    }
+    if (lines > IMX708_FRAME_LENGTH_MAX) {
+        lines = IMX708_FRAME_LENGTH_MAX;
+    }
+
+    imx708_lock(dev);
+    uint32_t old = para->isp_info.isp_v1_info.vts;
+    para->isp_info.isp_v1_info.vts = lines;
+
+    /* exposure_max() now sees the new frame - does the exposure still fit? */
+    if (imx708_quantize_exposure(dev, para->exposure_val) != para->exposure_val) {
+        ret = imx708_write_exposure(dev, para->exposure_val);
+    }
+    if (ret == ESP_OK) {
+        ret = esp_sccb_transmit_reg_a16v16(dev->sccb_handle, IMX708_REG_FRAME_LENGTH_H, (uint16_t)lines);
+    }
+    if (ret == ESP_OK) {
+        /* Nearest whole fps, for esp_video's G_PARM/S_PARM. Never 0: the
+           longest frame is still just over 1 fps. */
+        uint64_t per_frame = (uint64_t)para->isp_info.isp_v1_info.hts * lines;
+        para->format.fps = (uint8_t)(((uint64_t)para->isp_info.isp_v1_info.pclk + per_frame / 2) / per_frame);
+    } else {
+        para->isp_info.isp_v1_info.vts = old;
+    }
+    imx708_unlock(dev);
+
+    ESP_RETURN_ON_ERROR(ret, TAG, "frame length %" PRIu32 " failed", lines);
+    ESP_LOGI(TAG, "frame length %" PRIu32 " -> %" PRIu32 " lines (%d fps), exposure max %" PRIu32,
+             old, lines, para->format.fps, imx708_exposure_max(dev));
+    return ESP_OK;
 }
 
 /* Analog gain: 16-bit reg 0x0204, code 112..960, gain = 1024/(1024-code). */
@@ -708,6 +823,14 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
         qdesc->number.step = imx708_mode_ae(dev)->exposure_lines_step;
         qdesc->default_value = imx708_quantize_exposure(dev, 1288);
         break;
+    case IMX708_CID_FRAME_LENGTH:
+        qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
+        qdesc->number.minimum = imx708_mode_ae(dev)->frame_length_min;
+        qdesc->number.maximum = IMX708_FRAME_LENGTH_MAX;
+        qdesc->number.step = 1;
+        qdesc->default_value = (dev && dev->priv)
+                               ? ((imx708_para_t *)dev->priv)->frame_length_default : IMX708_VTS;
+        break;
     case ESP_CAM_SENSOR_GAIN:
         /* Menu control: elements are total gain in milli-units, and the value
            set later is an INDEX into this table, not a register code. */
@@ -758,6 +881,9 @@ static esp_err_t imx708_get_para_value(esp_cam_sensor_device_t *dev, uint32_t id
         break;
     case ESP_CAM_SENSOR_VFLIP:
         *(uint32_t *)arg = para->vflip;
+        break;
+    case IMX708_CID_FRAME_LENGTH:
+        *(uint32_t *)arg = imx708_frame_length(dev);
         break;
     default:
         return ESP_ERR_NOT_SUPPORTED;
@@ -815,6 +941,9 @@ static esp_err_t imx708_set_para_value(esp_cam_sensor_device_t *dev, uint32_t id
     }
     case ESP_CAM_SENSOR_DGAIN:
         ret = imx708_set_digital_gain(dev, *(const uint32_t *)arg);
+        break;
+    case IMX708_CID_FRAME_LENGTH:
+        ret = imx708_apply_frame_length(dev, *(const uint32_t *)arg);
         break;
     default:
         ESP_LOGE(TAG, "set id=%" PRIx32 " not supported", id);
@@ -915,6 +1044,25 @@ static esp_err_t imx708_select_format(esp_cam_sensor_device_t *dev, const esp_ca
         return ESP_ERR_INVALID_STATE;
     }
 
+    /*
+     * Rebuild from the static entry whose register table this is, not from
+     * whatever `format` carries. An application that reads the current format
+     * back with VIDIOC_G_SENSOR_FMT and hands it straight to
+     * VIDIOC_S_SENSOR_FMT - the way to make esp_video re-latch the Bayer phase
+     * after a flip - passes a copy of the shadow, which by then may hold a
+     * frame length and fps changed at run time. The mode table is about to
+     * write the mode's own frame length to the sensor, so the shadow has to
+     * say the same, or exposure_max() works from a frame that is not there.
+     * Matching on regs also keeps the source from ever being the shadow
+     * itself, which memcpy could not cope with.
+     */
+    for (size_t i = 0; i < ARRAY_SIZE(imx708_format_info); i++) {
+        if (imx708_format_info[i].regs == format->regs) {
+            format = &imx708_format_info[i];
+            break;
+        }
+    }
+
     para->format = *format;
     if (format->isp_info) {
         /*
@@ -922,30 +1070,20 @@ static esp_err_t imx708_select_format(esp_cam_sensor_device_t *dev, const esp_ca
          * makes the whole union non-assignable. The destination is inside the
          * device's calloc'd block, so it has no declared type of its own and
          * the copy is what gives it one.
-         *
-         * Skipped when the source is already the shadow. An application that
-         * reads the current format back with VIDIOC_G_SENSOR_FMT and hands it
-         * straight to VIDIOC_S_SENSOR_FMT - the way to make esp_video re-latch
-         * the Bayer phase after a flip - arrives here with isp_info pointing at
-         * the very object being written, and memcpy may not overlap.
          */
         if (format->isp_info != &para->isp_info) {
             memcpy(&para->isp_info, format->isp_info, sizeof(para->isp_info));
         }
         para->format.isp_info = &para->isp_info;
+        para->frame_length_default = para->isp_info.isp_v1_info.vts;
     }
     dev->cur_format = &para->format;
     return ESP_OK;
 }
 
-static esp_err_t imx708_set_format(esp_cam_sensor_device_t *dev, const esp_cam_sensor_format_t *format)
+static esp_err_t imx708_set_format_locked(esp_cam_sensor_device_t *dev, const esp_cam_sensor_format_t *format)
 {
-    ESP_CAM_SENSOR_NULL_POINTER_CHECK(TAG, dev);
     esp_err_t ret = ESP_OK;
-
-    if (format == NULL) {
-        format = &imx708_format_info[IMX708_DEFAULT_FORMAT_INDEX];
-    }
 
     /* common -> mode -> link freq, the order the sensor is brought up in. The
        mode table carries the rest of the PLL block, so the link multiplier has
@@ -982,6 +1120,24 @@ static esp_err_t imx708_set_format(esp_cam_sensor_device_t *dev, const esp_cam_s
     para->gain_index = 0;                    /* mode table writes min gain */
 
     ESP_LOGI(TAG, "set format: %s", format->name);
+    return ret;
+}
+
+/*
+ * Under the driver lock, because this rewrites 0x0340 and rebuilds the shadow
+ * frame length from the const table, and an application may be setting the
+ * frame length from its own task at the same moment.
+ */
+static esp_err_t imx708_set_format(esp_cam_sensor_device_t *dev, const esp_cam_sensor_format_t *format)
+{
+    ESP_CAM_SENSOR_NULL_POINTER_CHECK(TAG, dev);
+
+    if (format == NULL) {
+        format = &imx708_format_info[IMX708_DEFAULT_FORMAT_INDEX];
+    }
+    imx708_lock(dev);
+    esp_err_t ret = imx708_set_format_locked(dev, format);
+    imx708_unlock(dev);
     return ret;
 }
 
@@ -1074,11 +1230,58 @@ static esp_err_t imx708_power_off(esp_cam_sensor_device_t *dev)
     return ESP_OK;
 }
 
+/*
+ * The detected sensor, for the frame-length functions in imx708.h. esp_video
+ * detects the sensor itself and keeps the handle private, so an application
+ * built on it has no esp_cam_sensor_device_t to pass - and the frame length is
+ * a control esp_video has no V4L2 mapping for. The P4 has one CSI port, so
+ * there is one of these at most.
+ */
+static esp_cam_sensor_device_t *s_imx708_dev;
+
+static void imx708_free(esp_cam_sensor_device_t *dev)
+{
+    imx708_para_t *para = (imx708_para_t *)dev->priv;
+    if (s_imx708_dev == dev) {
+        s_imx708_dev = NULL;
+    }
+    if (para && para->lock) {
+        vSemaphoreDelete(para->lock);
+    }
+    free(dev);
+}
+
 static esp_err_t imx708_delete(esp_cam_sensor_device_t *dev)
 {
     ESP_LOGD(TAG, "del imx708 (%p)", dev);
     if (dev) {
-        free(dev);
+        imx708_free(dev);
+    }
+    return ESP_OK;
+}
+
+esp_err_t imx708_set_frame_length(uint32_t lines)
+{
+    if (s_imx708_dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return imx708_apply_frame_length(s_imx708_dev, lines);
+}
+
+esp_err_t imx708_get_frame_length(uint32_t *lines, uint32_t *min, uint32_t *max)
+{
+    esp_cam_sensor_device_t *dev = s_imx708_dev;
+    if (dev == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (lines) {
+        *lines = imx708_frame_length(dev);
+    }
+    if (min) {
+        *min = imx708_mode_ae(dev)->frame_length_min;
+    }
+    if (max) {
+        *max = IMX708_FRAME_LENGTH_MAX;
     }
     return ESP_OK;
 }
@@ -1139,12 +1342,17 @@ esp_cam_sensor_device_t *imx708_detect(esp_cam_sensor_config_t *config)
     }
     ESP_LOGI(TAG, "detected IMX708, PID=0x%04x", dev->id.pid);
 
-
+    ((imx708_para_t *)dev->priv)->lock = xSemaphoreCreateMutex();
+    if (((imx708_para_t *)dev->priv)->lock == NULL) {
+        ESP_LOGE(TAG, "no memory for the driver lock");
+        goto err;
+    }
+    s_imx708_dev = dev;
     return dev;
 
 err:
     imx708_power_off(dev);
-    free(dev);
+    imx708_free(dev);
     return NULL;
 }
 

@@ -29,10 +29,30 @@ extern "C" {
 #define IMX708_ORIENTATION_VFLIP    0x02
 #define IMX708_REG_CSI_LANE_MODE    0x0114  /*!< 0x01 = 2 lane */
 
-/* V timing */
+/*
+ * V timing.
+ *
+ * Frame length is the frame-rate control: line length is fixed per mode, so
+ * fps = pixel_rate / (line_length * frame_length), and it is also the exposure
+ * ceiling, since integration cannot run past frame_length - 48 lines. The
+ * register is live - a new value takes effect at the next frame boundary with
+ * no standby - which is how Raspberry Pi's driver serves V4L2_CID_VBLANK.
+ *
+ * The floor is the rows the sensor actually reads plus a minimum blanking. For
+ * the binned readout that is 1296 rows (2592 binned 2:1) whatever the output
+ * size, because every mode here is a digital crop taken after the full
+ * readout; 40 lines is Raspberry Pi's vblank_min for that mode. 1336 lines is
+ * 56 fps, which is a sensor limit and says nothing about whether the P4
+ * pipeline downstream keeps up.
+ *
+ * The ceiling is the register's 16 bits, about 0.88 s per frame in the binned
+ * modes. Longer needs the long-exposure shift at 0x3100, which is not wired up.
+ */
 #define IMX708_REG_FRAME_LENGTH_H   0x0340  /*!< VTS (frame length lines) */
 #define IMX708_REG_FRAME_LENGTH_L   0x0341
 #define IMX708_FRAME_LENGTH_MAX     0xffff
+#define IMX708_BINNED_READOUT_ROWS  1296
+#define IMX708_VBLANK_MIN_BINNED    40
 
 /* Exposure / gain (all 16-bit, big-endian) */
 #define IMX708_REG_EXPOSURE_H       0x0202
