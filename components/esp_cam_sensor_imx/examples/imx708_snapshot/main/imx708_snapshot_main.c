@@ -1376,22 +1376,33 @@ static bool capture_mode_cycled(const esp_cam_sensor_format_t *want, int index)
         ESP_LOGE(TAG, "could not select %s - skipping this mode", want->name);
     } else {
         /*
-         * Distinct names so each mode, each flip state and each exposure bias
-         * is its own file. An exposure sweep at one resolution would otherwise
-         * write every frame over the last one, and the whole point of it is
-         * having the frames side by side.
+         * Distinct names so each mode, flip state, exposure bias, frame
+         * length, test pattern and link frequency is its own file. A sweep of
+         * any one of them at one resolution would otherwise write every frame
+         * over the last one, and the whole point of it is having the frames
+         * side by side. Each suffix is left off at its default, so an
+         * untouched capture is still plain imx708_<w>x<h>.
          */
+        static const char *const tp_suffix[] = { "", "_bars", "_solid", "_fade", "_pn9" };
+        _Static_assert(sizeof(tp_suffix) / sizeof(tp_suffix[0]) ==
+                       sizeof(s_test_pattern_names) / sizeof(s_test_pattern_names[0]),
+                       "one file-name suffix per test pattern");
         char name[64];
         char ev[8] = "";
         char fl[16] = "";
+        char lf[12] = "";
         if (s_ev_bias != 0) {
             snprintf(ev, sizeof(ev), "_ev%+d", s_ev_bias);
         }
         if (s_frame_lengths[s_frame_length_idx] != 0) {
             snprintf(fl, sizeof(fl), "_fl%" PRIu32, s_frame_lengths[s_frame_length_idx]);
         }
-        snprintf(name, sizeof(name), "imx708_%ux%u%s%s%s%s", want->width, want->height,
-                 s_hmirror ? "_h" : "", s_vflip ? "_v" : "", ev, fl);
+        if (s_link_freq_idx != 0) {
+            snprintf(lf, sizeof(lf), "_lf%" PRIu32, s_link_freqs[s_link_freq_idx] / 1000000);
+        }
+        snprintf(name, sizeof(name), "imx708_%ux%u%s%s%s%s%s%s", want->width, want->height,
+                 s_hmirror ? "_h" : "", s_vflip ? "_v" : "", ev, fl,
+                 tp_suffix[s_test_pattern], lf);
         capture_at_current_mode(fd, name, AIM_SECONDS);
     }
 
