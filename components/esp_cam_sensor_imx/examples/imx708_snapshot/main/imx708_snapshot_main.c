@@ -725,13 +725,16 @@ static int s_ev_bias = 0;
 /*
  * Frame length for the next capture, cycled from the console with f. Index 0
  * is "leave the mode alone"; the rest are 15, 10 and 56 fps at the binned
- * modes' 13.361 us line (lines = 74847 / fps). 56 is the sensor's floor.
+ * modes' 13.361 us line (lines = 74847 / fps), and a 2 s frame. 56 is the
+ * sensor's floor. 2 s is past the register's 16 bits, so it runs on the
+ * long-exposure shift (n = 2) - pair it with + to put the exposure out there
+ * too, since AE keeps to the range it started with.
  *
  * Applied after STREAMON on purpose: the control is meant to be live, and
  * setting it on a running stream is the case worth proving. It has to come
  * after VIDIOC_S_SENSOR_FMT regardless, which restores the mode's own value.
  */
-static const uint32_t s_frame_lengths[] = { 0, 4990, 7485, 1336 };
+static const uint32_t s_frame_lengths[] = { 0, 4990, 7485, 1336, 149694 };
 static int s_frame_length_idx = 0;
 
 /*
@@ -1367,7 +1370,7 @@ static void mode_console_loop(void)
            "  h / v   toggle horizontal / vertical flip, n clears both\n"
            "  - / +   expose one stop darker / brighter than AE, a returns to auto\n"
            "          (d and b are dash-free aliases for - and +, for --keys)\n"
-           "  f       cycle frame rate: mode default, 15, 10, 56 fps\n");
+           "  f       cycle frame rate: mode default, 15, 10, 56 fps, 2 s\n");
     for (int i = 0; ; i++) {
         const esp_cam_sensor_format_t *f = imx708_format_by_index(i);
         if (f == NULL) {
@@ -1446,7 +1449,9 @@ static void mode_console_loop(void)
             if (fl == 0) {
                 printf("frame length -> mode default\n");
             } else {
-                printf("frame length -> %" PRIu32 " lines (~%" PRIu32 " fps)\n", fl, (74847 + fl / 2) / fl);
+                /* In ms, not fps: the 2 s entry would print as 0 fps. */
+                printf("frame length -> %" PRIu32 " lines (~%" PRIu32 " ms)\n", fl,
+                       (uint32_t)(((uint64_t)fl * 13361 + 500000) / 1000000));
             }
             continue;
         }
