@@ -95,10 +95,23 @@ const esp_cam_sensor_format_t *imx708_format_by_size(uint16_t width, uint16_t he
  * 585.6 MHz), so fps = 74847 / lines, and lines = 74847 / fps:
  *
  *   1336 lines = 56 fps (the floor)   2672 = 28 fps (every mode's default)
- *   4990 = 15 fps    7485 = 10 fps    65535 = 1.14 fps (the ceiling)
+ *   4990 = 15 fps    7485 = 10 fps    65535 = 1.14 fps
+ *   149694 = 2 s     748470 = 10 s    8388480 = 112 s (the ceiling)
  *
  * Out-of-range values are clamped, not rejected; read the value back with
  * imx708_get_frame_length().
+ *
+ * Past 65535 lines the driver switches on the sensor's long-exposure shift,
+ * which counts frame length and exposure in units of 2^n lines (n up to 7,
+ * the smallest that fits). That has three visible effects:
+ *  - The frame length is rounded down to a multiple of 2^n.
+ *  - V4L2_CID_EXPOSURE's minimum and step scale by 2^n too: at 2 s
+ *    (n = 2) exposure runs from 16 lines in steps of 8. esp_video rejects an
+ *    off-step value, so re-query the range after changing the frame length.
+ *  - Crossing a 2^n boundary rewrites three interdependent registers with no
+ *    group hold, so the frame at the switch can have mixed timing. Discard it.
+ * VIDIOC_G_PARM's frame rate bottoms out at 1 fps, since it counts whole
+ * frames per second; below that the frame length is the real figure.
  *
  * The sensor delivers every rate in that range. The P4 pipeline behind it,
  * measured with imx708_snapshot: every mode is clean at 56 fps except
@@ -115,7 +128,7 @@ const esp_cam_sensor_format_t *imx708_format_by_size(uint16_t width, uint16_t he
  *    room but AE keeps to the range it started with. A shorter frame is fine
  *    - AE's requests are clamped to the live range.
  *  - Survive a mode change. VIDIOC_S_SENSOR_FMT restores the mode's own frame
- *    length, so set this after it.
+ *    length and clears the shift, so set this after it.
  *
  * Applies to the sensor esp_video (or anyone) detected through imx708_detect().
  *

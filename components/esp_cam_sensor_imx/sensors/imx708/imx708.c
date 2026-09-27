@@ -587,48 +587,90 @@ static const imx708_mode_ae_t *imx708_mode_ae(esp_cam_sensor_device_t *dev)
     return &imx708_binned_ae;
 }
 
-/*
- * Exposure ceiling. Integration time cannot exceed frame_length - 48 lines,
- * and frame_length is a per-mode value carried in isp_info, not a constant of
- * the sensor. Every mode shipped today is a crop of one readout and so shares
- * a VTS, but a mode that changed the frame rate would change it, and the
- * failure would be quiet: an exposure past frame_length silently does not take
- * effect, so the AE loop sees no response to its own request and keeps asking.
- */
-static uint32_t imx708_exposure_max(esp_cam_sensor_device_t *dev)
+/* The frame length in force, in lines. */
+static uint32_t imx708_frame_length(esp_cam_sensor_device_t *dev)
 {
-    const imx708_mode_ae_t *ae = imx708_mode_ae(dev);
-    uint32_t vts = IMX708_VTS;
-
     if (dev && dev->cur_format && dev->cur_format->isp_info) {
-        vts = dev->cur_format->isp_info->isp_v1_info.vts;
+        return dev->cur_format->isp_info->isp_v1_info.vts;
     }
-    if (vts <= IMX708_EXPOSURE_OFFSET + ae->exposure_lines_min) {
-        return ae->exposure_lines_min;
-    }
-    /* Down to the step grid, so that every value in [min, max] is reachable
-       and the ceiling itself is one the sensor will not quietly round away. */
-    return (vts - IMX708_EXPOSURE_OFFSET) - ((vts - IMX708_EXPOSURE_OFFSET) % ae->exposure_lines_step);
+    return IMX708_VTS;
 }
 
 /*
- * Clamp to the mode's range and then onto its step grid, the order Raspberry
+ * The long-exposure shift a frame length needs: the smallest s for which it
+ * fits the 16-bit register in units of 2^s lines. 0 for every frame of a
+ * second or less, which is every rate a mode comes up at.
+ */
+static uint32_t imx708_long_exp_shift(uint32_t frame_lines)
+{
+    uint32_t shift = 0;
+    while (shift < IMX708_LONG_EXP_SHIFT_MAX && (frame_lines >> shift) > IMX708_FRAME_LENGTH_MAX) {
+        shift++;
+    }
+    return shift;
+}
+
+/*
+ * Exposure limits in lines, for the frame in force.
+ *
+ * All of the arithmetic is done in the sensor's own units and scaled up after,
+ * because under a long-exposure shift those are 2^s lines: the value written
+ * to 0x0202 has to satisfy the mode's min and step and the frame's ceiling
+ * *as a register value*. So at shift s, min and step are the mode's pair times
+ * 2^s - 2 s of frame (shift 2) exposes in 8-line steps from 16 - and every
+ * value these report is one the sensor will hold exactly. With no shift they
+ * are the mode's own numbers, as before.
+ *
+ * Integration cannot exceed frame_length - 48 units, and frame_length is a
+ * per-mode, run-time value carried in isp_info, not a constant of the sensor.
+ * An exposure past it silently does not take effect, so an AE loop that was
+ * allowed to ask for one would see no response and keep asking.
+ */
+static uint32_t imx708_exposure_min(esp_cam_sensor_device_t *dev)
+{
+    return imx708_mode_ae(dev)->exposure_lines_min << imx708_long_exp_shift(imx708_frame_length(dev));
+}
+
+static uint32_t imx708_exposure_step(esp_cam_sensor_device_t *dev)
+{
+    return imx708_mode_ae(dev)->exposure_lines_step << imx708_long_exp_shift(imx708_frame_length(dev));
+}
+
+static uint32_t imx708_exposure_max(esp_cam_sensor_device_t *dev)
+{
+    const imx708_mode_ae_t *ae = imx708_mode_ae(dev);
+    uint32_t vts = imx708_frame_length(dev);
+    uint32_t shift = imx708_long_exp_shift(vts);
+    uint32_t reg_vts = vts >> shift;
+
+    if (reg_vts <= IMX708_EXPOSURE_OFFSET + ae->exposure_lines_min) {
+        return ae->exposure_lines_min << shift;
+    }
+    /* Down to the step grid, so that every value in [min, max] is reachable
+       and the ceiling itself is one the sensor will not quietly round away. */
+    uint32_t reg_max = reg_vts - IMX708_EXPOSURE_OFFSET;
+    return (reg_max - (reg_max % ae->exposure_lines_step)) << shift;
+}
+
+/*
+ * Clamp to the frame's range and then onto its step grid, the order Raspberry
  * Pi's driver uses. Rounding down after the ceiling keeps the result legal;
  * rounding down cannot fall below the floor because every min the sensor
- * defines is a whole number of steps.
+ * defines is a whole number of steps, and the shift scales both alike.
  */
 static uint32_t imx708_quantize_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
 {
-    const imx708_mode_ae_t *ae = imx708_mode_ae(dev);
+    uint32_t min = imx708_exposure_min(dev);
     uint32_t max = imx708_exposure_max(dev);
+    uint32_t step = imx708_exposure_step(dev);
 
-    if (lines < ae->exposure_lines_min) {
-        lines = ae->exposure_lines_min;
+    if (lines < min) {
+        lines = min;
     }
     if (lines > max) {
         lines = max;
     }
-    return lines - (lines % ae->exposure_lines_step);
+    return lines - (lines % step);
 }
 
 /*
@@ -654,12 +696,16 @@ static void imx708_unlock(esp_cam_sensor_device_t *dev)
     }
 }
 
-/* Exposure in lines (16-bit reg 0x0202). Caller holds the lock. */
+/*
+ * Exposure in lines (16-bit reg 0x0202, in units of 2^shift lines under a
+ * long-exposure shift). Caller holds the lock.
+ */
 static esp_err_t imx708_write_exposure(esp_cam_sensor_device_t *dev, uint32_t lines)
 {
     lines = imx708_quantize_exposure(dev, lines);
 
-    esp_err_t ret = imx708_write16(dev->sccb_handle, IMX708_REG_EXPOSURE_H, (uint16_t)lines);
+    uint32_t reg = lines >> imx708_long_exp_shift(imx708_frame_length(dev));
+    esp_err_t ret = imx708_write16(dev->sccb_handle, IMX708_REG_EXPOSURE_H, (uint16_t)reg);
     if (ret == ESP_OK && dev->priv) {
         /* The quantized value, not the requested one: a caller that reads back
            what it just set has to see what the sensor is actually doing, or
@@ -676,15 +722,6 @@ static esp_err_t imx708_set_exposure(esp_cam_sensor_device_t *dev, uint32_t line
     esp_err_t ret = imx708_write_exposure(dev, lines);
     imx708_unlock(dev);
     return ret;
-}
-
-/* The frame length in force, in lines. */
-static uint32_t imx708_frame_length(esp_cam_sensor_device_t *dev)
-{
-    if (dev && dev->cur_format && dev->cur_format->isp_info) {
-        return dev->cur_format->isp_info->isp_v1_info.vts;
-    }
-    return IMX708_VTS;
 }
 
 /*
@@ -708,11 +745,20 @@ static uint32_t imx708_frame_length(esp_cam_sensor_device_t *dev)
  * 0x0340 and the shadow is rebuilt from the const table - which is also what
  * Linux does on a mode change.
  *
- * Order matters when the frame shrinks: the exposure is clamped to the new
- * ceiling and written first, so the sensor is never holding an integration
- * longer than the frame it is about to get. The register goes as one 16-bit
- * burst so its halves cannot straddle a frame boundary and briefly program a
- * frame length nobody asked for.
+ * Past 0xffff lines it switches on the long-exposure shift (0x3100): the
+ * frame is written as lines >> s, so above that point it moves in steps of
+ * 2^s lines and a request is rounded down onto them - read it back. The shift
+ * rescales 0x0202 too, so the exposure register is rewritten whenever the
+ * shift changes, even when the exposure in lines does not.
+ *
+ * Order: when the frame shrinks the exposure goes first, so the sensor is
+ * never holding an integration longer than the frame it is about to get; when
+ * it grows, the frame goes first and the exposure last - the same sequence
+ * reversed. Within one shift that is exact. A change that crosses a shift
+ * boundary is three registers whose meanings depend on each other and no
+ * group hold to land them together, so one frame at the boundary can come out
+ * with mixed timing; discard it. Each 16-bit register goes as one burst so
+ * its own halves cannot straddle a frame.
  */
 static esp_err_t imx708_apply_frame_length(esp_cam_sensor_device_t *dev, uint32_t lines)
 {
@@ -726,34 +772,59 @@ static esp_err_t imx708_apply_frame_length(esp_cam_sensor_device_t *dev, uint32_
     if (lines < ae->frame_length_min) {
         lines = ae->frame_length_min;
     }
-    if (lines > IMX708_FRAME_LENGTH_MAX) {
-        lines = IMX708_FRAME_LENGTH_MAX;
+    if (lines > IMX708_FRAME_LENGTH_LONG_MAX) {
+        lines = IMX708_FRAME_LENGTH_LONG_MAX;
     }
+    uint32_t shift = imx708_long_exp_shift(lines);
+    uint32_t reg = lines >> shift;
+    lines = reg << shift;
 
     imx708_lock(dev);
     uint32_t old = para->isp_info.isp_v1_info.vts;
+    uint32_t old_shift = imx708_long_exp_shift(old);
     para->isp_info.isp_v1_info.vts = lines;
 
-    /* exposure_max() now sees the new frame - does the exposure still fit? */
-    if (imx708_quantize_exposure(dev, para->exposure_val) != para->exposure_val) {
+    /* exposure_max() now sees the new frame - does the exposure still fit,
+       and is the register still counting in the same units? */
+    bool exp_dirty = shift != old_shift ||
+                     imx708_quantize_exposure(dev, para->exposure_val) != para->exposure_val;
+    bool shrinking = lines < old;
+
+    if (exp_dirty && shrinking) {
+        ret = imx708_write_exposure(dev, para->exposure_val);
+    }
+    if (ret == ESP_OK && shift != old_shift) {
+        ret = imx708_write(dev->sccb_handle, IMX708_REG_LONG_EXP_SHIFT, (uint8_t)shift);
+    }
+    if (ret == ESP_OK) {
+        ret = esp_sccb_transmit_reg_a16v16(dev->sccb_handle, IMX708_REG_FRAME_LENGTH_H, (uint16_t)reg);
+    }
+    if (ret == ESP_OK && exp_dirty && !shrinking) {
         ret = imx708_write_exposure(dev, para->exposure_val);
     }
     if (ret == ESP_OK) {
-        ret = esp_sccb_transmit_reg_a16v16(dev->sccb_handle, IMX708_REG_FRAME_LENGTH_H, (uint16_t)lines);
-    }
-    if (ret == ESP_OK) {
-        /* Nearest whole fps, for esp_video's G_PARM/S_PARM. Never 0: the
-           longest frame is still just over 1 fps. */
+        /* Nearest whole fps, for esp_video's G_PARM/S_PARM. Floored at 1,
+           because the field is whole frames per second and a shifted frame
+           can run to tens of seconds; 0 would read as "no rate" to anything
+           dividing by it. Below 1 fps the frame length is the only truth. */
         uint64_t per_frame = (uint64_t)para->isp_info.isp_v1_info.hts * lines;
-        para->format.fps = (uint8_t)(((uint64_t)para->isp_info.isp_v1_info.pclk + per_frame / 2) / per_frame);
+        uint64_t fps = ((uint64_t)para->isp_info.isp_v1_info.pclk + per_frame / 2) / per_frame;
+        para->format.fps = (uint8_t)(fps ? fps : 1);
     } else {
+        /*
+         * Put the shadow back, but the sensor may already hold part of the
+         * new state - a register that did land stays landed. Rare enough (an
+         * SCCB failure) that the error is the useful part.
+         */
         para->isp_info.isp_v1_info.vts = old;
     }
     imx708_unlock(dev);
 
     ESP_RETURN_ON_ERROR(ret, TAG, "frame length %" PRIu32 " failed", lines);
-    ESP_LOGI(TAG, "frame length %" PRIu32 " -> %" PRIu32 " lines (%d fps), exposure max %" PRIu32,
-             old, lines, para->format.fps, imx708_exposure_max(dev));
+    ESP_LOGI(TAG, "frame length %" PRIu32 " -> %" PRIu32 " lines (shift %" PRIu32 ", %d fps), "
+             "exposure %" PRIu32 "..%" PRIu32 " step %" PRIu32,
+             old, lines, shift, para->format.fps, imx708_exposure_min(dev),
+             imx708_exposure_max(dev), imx708_exposure_step(dev));
     return ESP_OK;
 }
 
@@ -818,15 +889,17 @@ static esp_err_t imx708_query_para_desc(esp_cam_sensor_device_t *dev, esp_cam_se
            an AE loop that walks this range in steps of 1 spends half its
            requests on values the sensor rounds back to the previous one. */
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
-        qdesc->number.minimum = imx708_mode_ae(dev)->exposure_lines_min;
+        qdesc->number.minimum = imx708_exposure_min(dev);
         qdesc->number.maximum = imx708_exposure_max(dev);
-        qdesc->number.step = imx708_mode_ae(dev)->exposure_lines_step;
+        qdesc->number.step = imx708_exposure_step(dev);
         qdesc->default_value = imx708_quantize_exposure(dev, 1288);
         break;
     case IMX708_CID_FRAME_LENGTH:
         qdesc->type = ESP_CAM_SENSOR_PARAM_TYPE_NUMBER;
+        /* Step 1 is only true up to 0xffff; past it the grid is 2^shift and a
+           value between is rounded down rather than rejected. */
         qdesc->number.minimum = imx708_mode_ae(dev)->frame_length_min;
-        qdesc->number.maximum = IMX708_FRAME_LENGTH_MAX;
+        qdesc->number.maximum = IMX708_FRAME_LENGTH_LONG_MAX;
         qdesc->number.step = 1;
         qdesc->default_value = (dev && dev->priv)
                                ? ((imx708_para_t *)dev->priv)->frame_length_default : IMX708_VTS;
@@ -1100,6 +1173,15 @@ static esp_err_t imx708_set_format_locked(esp_cam_sensor_device_t *dev, const es
     ret = imx708_write_array(dev->sccb_handle, imx708_link_450mhz_regs);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "write link regs failed");
 
+    /*
+     * The mode table writes the frame length but not the long-exposure shift,
+     * and neither a P4 reset nor a mode change resets the sensor, so a shift
+     * left over from a long frame would otherwise multiply the new mode's
+     * frame and exposure by up to 128. The shadow is rebuilt unshifted below.
+     */
+    ret = imx708_write(dev->sccb_handle, IMX708_REG_LONG_EXP_SHIFT, 0);
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "clear long-exposure shift failed");
+
     /* Binned modes don't re-mosaic, so the quad-Bayer LPF stays off. */
     ret = imx708_write(dev->sccb_handle, IMX708_REG_LPF_INTENSITY_EN, IMX708_LPF_INTENSITY_DISABLED);
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ret, TAG, "disable quad-bayer LPF failed");
@@ -1281,7 +1363,7 @@ esp_err_t imx708_get_frame_length(uint32_t *lines, uint32_t *min, uint32_t *max)
         *min = imx708_mode_ae(dev)->frame_length_min;
     }
     if (max) {
-        *max = IMX708_FRAME_LENGTH_MAX;
+        *max = IMX708_FRAME_LENGTH_LONG_MAX;
     }
     return ESP_OK;
 }

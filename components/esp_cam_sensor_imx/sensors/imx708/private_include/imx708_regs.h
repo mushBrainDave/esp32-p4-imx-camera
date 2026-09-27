@@ -45,12 +45,19 @@ extern "C" {
  * 56 fps, which is a sensor limit and says nothing about whether the P4
  * pipeline downstream keeps up.
  *
- * The ceiling is the register's 16 bits, about 0.88 s per frame in the binned
- * modes. Longer needs the long-exposure shift at 0x3100, which is not wired up.
+ * The register's own ceiling is 16 bits, about 0.88 s per frame in the binned
+ * modes. Past that the long-exposure shift at 0x3100 takes over: at shift s the
+ * sensor counts both frame length (0x0340) and coarse integration (0x0202) in
+ * units of 2^s lines, up to s = 7, so the longest frame is 128 x 0xffff lines -
+ * about 112 s binned. Raspberry Pi's driver drives it the same way. No mode
+ * table writes 0x3100, so it survives a mode change unless cleared.
  */
 #define IMX708_REG_FRAME_LENGTH_H   0x0340  /*!< VTS (frame length lines) */
 #define IMX708_REG_FRAME_LENGTH_L   0x0341
-#define IMX708_FRAME_LENGTH_MAX     0xffff
+#define IMX708_FRAME_LENGTH_MAX     0xffff  /*!< register ceiling, per shift unit */
+#define IMX708_REG_LONG_EXP_SHIFT   0x3100  /*!< 0..7: frame and exposure counted in 2^n lines */
+#define IMX708_LONG_EXP_SHIFT_MAX   7
+#define IMX708_FRAME_LENGTH_LONG_MAX ((uint32_t)IMX708_FRAME_LENGTH_MAX << IMX708_LONG_EXP_SHIFT_MAX)
 #define IMX708_BINNED_READOUT_ROWS  1296
 #define IMX708_VBLANK_MIN_BINNED    40
 
