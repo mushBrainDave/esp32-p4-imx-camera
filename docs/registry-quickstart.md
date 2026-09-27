@@ -31,10 +31,10 @@ idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx:imx708_capt
 ```
 
 The version is optional and defaults to the newest published. Pin it with
-`mushbraindave/esp_cam_sensor_imx^0.3.0:imx708_capture` if you want a specific
-line — a caret range on `0.x` covers that whole minor series, so `^0.3.0` picks
-up 0.2.1 and later but stops at 0.3.0. Note what that means going the other
-way: a project still pinned to `^0.2.0` will *not* pick up 0.3.0.
+`mushbraindave/esp_cam_sensor_imx^0.4.0:imx708_capture` if you want a specific
+line — a caret range on `0.x` covers that minor series only, so `^0.4.0` picks
+up 0.4.1 and later but stops short of 0.5.0. Note what that means going the
+other way: a project still pinned to `^0.3.0` will *not* pick up 0.4.0.
 
 The other example names are `imx708_snapshot`, `imx708_video`,
 `imx708_wifi_snapshot`, `imx708_wifi_video`, and — for a Camera Module v2 —
@@ -170,10 +170,12 @@ autofocus scores unrelated heap memory — settling on its first scan point ever
 time. From v5.4.4 ESP-IDF defines these itself, and defining them twice is why
 the shipped examples guard this on the version.
 
-Then write plain V4L2 against `/dev/video0`. Application code never includes
-`imx708.h` or calls the driver: it registers itself into `esp_cam_sensor`'s
-auto-detect array through a linker section, and `esp_video` binds it by chip ID
-at start-up.
+Then write plain V4L2 against `/dev/video0`. Streaming needs nothing from the
+driver directly: it registers itself into `esp_cam_sensor`'s auto-detect array
+through a linker section, and `esp_video` binds it by chip ID at start-up.
+Include `imx708.h` only for what V4L2 cannot reach — choosing a mode at run
+time, frame rate and long exposure, the solid test pattern's colour and the
+MIPI link frequency. The component README covers each.
 
 The fastest way to get all of the above right is to diff your
 `sdkconfig.defaults` and project `CMakeLists.txt` against `imx708_capture`'s.

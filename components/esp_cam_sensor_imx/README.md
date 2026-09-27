@@ -11,7 +11,7 @@ that gap.
 
 | Sensor | Module | Status |
 | ------ | ------ | ------ |
-| IMX708 | Pi Camera Module 3 / NoIR 3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264 |
+| IMX708 | Pi Camera Module 3 / NoIR 3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264, 2–56 fps and frames up to ~112 s, flips, test patterns, selectable link frequency |
 | IMX219 | Pi Camera Module v2 / NoIR v2 | 🟢 Streaming, ISP tuning, stills and H.264 video — verified on hardware. Fixed-focus, so no AF. Off by default; turn it on and turn the IMX708 off |
 
 | Sensor | Mode | Format | FPS | Notes |
@@ -47,15 +47,15 @@ removed once it was clear the sensor ignores them. If a later revision needs
 re-testing, the method is a byte at a time: write, read back, see whether it
 moved.
 
-### One readout, three crops
+### One readout, five crops
 
 The five IMX708 modes are one readout, not five. Each is a centred digital
 crop of the same 2×2-binned 2304×1296 field with the same line and frame
 timing, so a smaller mode buys CSI bandwidth, PSRAM and encode time and pays
-for it in field of view. It does not make the sensor faster — every mode reads
-out at 28 fps — but it does recover frames the pipeline drops at full size:
-`imx708_video` measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode.
-Exposure range does not change.
+for it in field of view. It does not change the sensor's timing — every mode
+defaults to 28 fps, and [frame rate is set separately](#frame-rate-exposure-and-test-controls)
+— but it does recover frames the pipeline drops at full size: `imx708_video`
+measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode.
 Nothing is scaled, so 640×480 is a narrow window on the middle of the scene
 rather than the whole scene shrunk. Pick the start-up mode with
 `CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`, or change it at run time by
@@ -197,6 +197,57 @@ entry or an HTTP parameter are the same call with a different one.
 The index is the unambiguous selector; look-up by size returns the first match.
 The IMX219 driver has no equivalent yet, and is build-time only.
 
+## Frame rate, exposure and test controls
+
+The IMX708 has the controls Raspberry Pi's Linux driver has. esp_video maps no
+V4L2 control onto most of them and never hands an application the sensor
+handle, so each comes twice: a plain function in `imx708.h` that works on the
+sensor esp_video detected, and an `IMX708_CID_*` parameter for code holding the
+handle.
+
+| Control | Function | Notes |
+| ------- | -------- | ----- |
+| Frame length / frame rate | `imx708_set_frame_length()`, `imx708_get_frame_length()` | Live mid-stream. fps = 74847 / lines: 1336 = 56 fps, 2672 = 28 (default), 4990 = 15. Past 65535 lines the long-exposure shift takes over, out to ~112 s. Also sets the exposure ceiling |
+| Test pattern | `V4L2_CID_TEST_PATTERN` | 0 off, 1 colour bars, 2 solid, 3 fade-to-grey bars, 4 PN9 — Raspberry Pi's order. Solid-colour levels via `imx708_set_test_pattern_colour()` |
+| MIPI link frequency | `imx708_set_link_freq()`, `imx708_get_link_freq()` | 447, 450 (default) or 453 MHz, only while not streaming. Boot default is Kconfig `CAMERA_IMX708_LINK_FREQ`. For moving the link's harmonics off a radio channel; frame timing is identical at all three |
+| Flips | `V4L2_CID_HFLIP`, `V4L2_CID_VFLIP` | Set **before** `VIDIOC_S_SENSOR_FMT` — see below |
+
+```c
+#include "imx708.h"
+
+/* 15 fps: after the mode is chosen, since a mode change restores its own. */
+imx708_set_frame_length(74847 / 15);
+
+uint32_t lines, min, max;
+imx708_get_frame_length(&lines, &min, &max);   /* read back: out-of-range is clamped */
+```
+
+Things worth knowing before relying on them:
+
+- **A longer frame raises the ceiling for manual exposure, not for AE.** The ISP
+  pipeline reads the exposure range once, at `esp_video_init()`, so AE keeps to
+  the range it started with. A shorter frame is fine; AE's requests are clamped.
+- **Re-query the exposure range after changing frame length past 65535 lines.**
+  With the long-exposure shift on, the exposure minimum and step scale by 2^n,
+  and esp_video rejects an off-step value outright. Discard the frame at which
+  the shift changes; its timing can be mixed.
+- **640×480 tears from 48 fps up** with nothing logged; every other mode is
+  clean at 56. It is downstream of the sensor and not yet explained.
+- **PN9 is only checkable raw.** It is a deterministic sequence, so a raw Bayer
+  frame should be byte-identical to the last one; after the ISP it is just
+  noise, and it overruns the hardware JPEG encoder.
+- **Flips must precede the format.** A flip rotates the Bayer phase, and both
+  drivers report the rotated one, but esp_video only reads it at device open
+  and on `VIDIOC_S_SENSOR_FMT` — not at `STREAMON` and not when a control
+  changes. A flip set later reaches the sensor and not the ISP, which then
+  demosaics on the wrong phase with no error. To re-latch, read the format back
+  with `VIDIOC_G_SENSOR_FMT` and pass it straight to `VIDIOC_S_SENSOR_FMT`.
+- **Setting a mode soft-resets the sensor**, then re-applies flips, test pattern
+  and link frequency. Frame length returns to the mode's default.
+
+`imx708_snapshot`'s console drives all of these from single keystrokes, and
+`imx708_video` takes a frame rate as `VIDEO_FPS` — 720p records a true 56 fps.
+
 Developed and measured on a **Waveshare ESP32-P4-WIFI6** with **ESP-IDF v5.4.0**.
 That is the only combination this has run on; the manifest's `idf: ">=5.4"` is
 what has been on the bench, not the oldest release that might compile.
@@ -217,13 +268,13 @@ log is `detected IMX708, PID=0x0708`.
 ## Install
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.3.0"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.4.0"
 ```
 
 Or start from a working example, which brings its own `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.3.0:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.4.0:imx708_capture"
 ```
 
 Then in `menuconfig`:
@@ -283,8 +334,8 @@ worth copying.
 | Example | What it does |
 | ------- | ------------ |
 | [`imx708_capture`](examples/imx708_capture/) | Streams frames and logs size and brightness per frame. Start here. |
-| [`imx708_snapshot`](examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Also carries the focus-sweep and buffer-poison diagnostics. |
-| [`imx708_video`](examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
+| [`imx708_snapshot`](examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Its console switches mode, flips, exposure bias, frame rate, test pattern and link frequency without a reflash. Also carries the focus-sweep and buffer-poison diagnostics. |
+| [`imx708_video`](examples/imx708_video/) | ~8 s of H.264 into PSRAM, then the whole clip down USB serial. Any mode, 2–56 fps; measured **27.3 fps at 1080p** (encoder-bound) and a true **56.0 at 720p**. |
 | [`imx708_wifi_snapshot`](examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
 | [`imx708_wifi_video`](examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
 | [`imx219_snapshot`](examples/imx219_snapshot/) | One still from a **Camera Module v2 / NoIR v2** (IMX219), hardware-JPEG encoded, sent down USB serial. No autofocus — the v2 is fixed-focus — and an AE convergence trace in its place. |
@@ -317,12 +368,19 @@ generated config.
 ## Hardware notes
 
 - **Lanes:** both sensors are 2-lane. IMX219 runs a fixed 456 MHz link
-  (912 Mbps/lane) for all modes.
+  (912 Mbps/lane) for all modes; the IMX708 runs 447, 450 or 453 MHz.
+- **Resetting the P4 does not reset the camera** — the connector routes neither
+  reset nor power-down — so both drivers soft-reset the sensor whenever a mode
+  is set.
+- **Cache-scrub capture buffers after `mmap`.** esp_video reallocates them on
+  every mode change and does no cache maintenance, so stale dirty lines can
+  evict over the DMA'd frame — seen as random pixels at the end of the last
+  row. The snapshot examples `esp_cache_msync` each buffer before the first `QBUF`.
 - **XCLK:** 24 MHz. On the Waveshare board the Pi-style 15-pin CSI connector
   routes neither reset nor pwdn and the sensor free-runs on its own oscillator,
   so there is no host XCLK and both pins are `-1`.
-- **Bayer order:** RGGB at default orientation. H/V flip changes the effective
-  Bayer phase, and the ISP config must track it if you enable flips.
+- **Bayer order:** RGGB at default orientation. Flips rotate it and the drivers
+  report the rotated phase; set flips before the format (see above).
 - **Width ceiling between 1920 and 2048 px.** At 2304 wide, scene data ran out
   around x=1918 and the edge columns duplicated each other exactly 2048 px
   apart. The limit is in the datapath, not the sensor — Espressif ship every P4

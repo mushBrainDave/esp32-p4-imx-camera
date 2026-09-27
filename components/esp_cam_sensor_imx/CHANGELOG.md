@@ -4,6 +4,123 @@ All notable changes to `esp_cam_sensor_imx` are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
 follow [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-27
+
+The IMX708 grows the controls Raspberry Pi's driver has: frame rate, long
+exposure, all five test patterns and a choice of MIPI link frequency. Flips now
+work, and a corrupted frame tail and a wedged-sensor state are fixed.
+
+### Added
+
+- **Frame length, and with it frame rate** — `imx708_set_frame_length()` /
+  `imx708_get_frame_length()`, and `IMX708_CID_FRAME_LENGTH` for callers holding
+  the sensor handle. Every mode has a 13.361 µs line, so fps = 74847 / lines:
+  1336 lines is the 56 fps floor, 2672 the 28 fps default. Live mid-stream; the
+  exposure ceiling and `V4L2_CID_EXPOSURE`'s advertised maximum follow it at
+  once. Measured by DQBUF timing at 28.000, 15.000, 10.000, 40.000, 47.986 and
+  56.0 fps.
+
+  Past 65535 lines the driver switches on the sensor's long-exposure shift
+  (`0x3100`), which counts in units of 2^n lines, raising the ceiling from
+  ~0.88 s to ~112 s. The exposure minimum and step scale by 2^n with it, so
+  re-query the range after a change. Measured: a 2 s frame runs at 0.500 fps,
+  and an exposure of 141792 lines was reached.
+
+  Two limits, both in `imx708.h`: the IPA reads the exposure range once at
+  `esp_video_init()`, so a longer frame gives *manual* exposure room but does
+  not raise AE's ceiling; and 640×480 tears from 48 fps up, where every other
+  mode is clean at 56 — downstream of the sensor, not yet explained.
+
+- **All five test patterns** on `V4L2_CID_TEST_PATTERN`, in Raspberry Pi's menu
+  order — off, colour bars, solid colour, fade-to-grey bars, PN9 — so 1 is still
+  colour bars. The solid pattern's per-channel levels are
+  `imx708_set_test_pattern_colour()`, or `IMX708_CID_TEST_PATTERN_RED` /
+  `_GREENR` / `_BLUE` / `_GREENB`. Pattern and levels survive a mode change. PN9
+  is the one for link integrity: a raw PN9 frame at 800×600 was byte-identical
+  across two boots.
+
+- **A choice of MIPI link frequency**: 447, 450 or 453 MHz, Raspberry Pi's three,
+  which exist to move the link's harmonics off a radio channel — relevant here,
+  with the ESP32-C6 transmitting centimetres from the camera cable. Boot default
+  is the new Kconfig choice `CAMERA_IMX708_LINK_FREQ` (450 MHz); at run time,
+  `imx708_set_link_freq()` / `imx708_get_link_freq()` or `IMX708_CID_LINK_FREQ`,
+  only while not streaming. Frame timing is identical at all three; the raw PN9
+  CRC matched at each.
+
+- **Phase-detect autofocus correction gains** are installed (two banks of 54 at
+  `0x7b10` and `0x7c00`), as Raspberry Pi's driver does — but only if the bank
+  still reads its power-up value, so a module that ships calibrated gains keeps
+  them. These feed the sensor's on-chip PDAF computation and change nothing in
+  the captured image; they are groundwork for phase-detect autofocus.
+
+- **`imx708_snapshot`** gains console keys for all of the above: `h`/`v`/`n`
+  flips, `-`/`+` (or `d`/`b`) one stop under or over what AE settled on and `a`
+  to hand it back, `f` to cycle frame rates (default, 15, 10, 56 fps, 2 s), `t`
+  to cycle test patterns and `l` to cycle link frequencies. A 2 s DQBUF timeout
+  makes a dead stream report itself instead of hanging. Every setting off its
+  default goes into the frame's file name —
+  `imx708_<w>x<h>[_h][_v][_ev±N][_fl<lines>][_<pattern>][_lf<MHz>]` — so a
+  sweep of any one of them does not overwrite itself.
+
+- **`imx708_video`** takes a frame rate, `VIDEO_FPS` (2..56, 0 = the mode's own
+  28). Measured: 720p records a true 30.0 and 56.0 fps with no dropped frames.
+
+### Fixed
+
+- **Flips left the ISP demosaicing on the wrong Bayer phase**, on both sensors.
+  A flip reverses the readout order, so the 2×2 colour tile the ISP must
+  demosaic rotates with it, but `bayer_type` was a compile-time RGGB. Nothing
+  errored; the picture was simply wrong — on the IMX708 the JPEG of one scene
+  grew from 327 KB to 918 KB with chroma zippering, and on the IMX219 the colour
+  collapsed towards grey. The reported phase now follows the flip bits.
+
+  **Apply flips before the format is set.** esp_video latches the Bayer phase at
+  device open and on `VIDIOC_S_SENSOR_FMT`, never at `STREAMON` or when a
+  control changes, so a flip set afterwards reaches the sensor and not the ISP.
+  The driver warns when a flip lands mid-stream. To re-latch, read the format back with
+  `VIDIOC_G_SENSOR_FMT` and hand it straight to `VIDIOC_S_SENSOR_FMT`.
+
+- **The last row of every frame had a block of random pixels** at its right edge
+  in `imx708_snapshot`, in all five modes. esp_video reallocates its buffers
+  on every mode change, and stale dirty cache lines over that PSRAM evicted on
+  top of what the capture DMA had written. The snapshot examples now write back
+  and invalidate each buffer after `mmap` and before `QBUF`. esp_video does no
+  cache maintenance of its own, so **an application that reallocates buffers
+  should do the same.**
+
+- **The sensor could wedge with no frames at all** — I2C answering, every write
+  succeeding, nothing reaching the CSI receiver, surviving a reflash. Resetting
+  the P4 does not reset the camera, so a mode was being programmed on top of the
+  last boot's state. `set_format` now starts with a software reset and waits for
+  the chip ID to answer again, as the IMX219 driver already did.
+
+- **The exposure control advertised the wrong range.** In a binned mode the
+  sensor only takes even line counts of 4 or more and rounds anything else,
+  which AE read as a dead zone in the scene. `query_para_desc` now reports each
+  mode's real minimum and step, and `set_exposure` quantises onto that grid and
+  stores what the sensor actually uses.
+
+- `imx708.h`'s mode-count and mode-index comments still described the
+  three-mode table.
+
+### Upgrading
+
+- **Move dependency pins from `^0.3.0` to `^0.4.0`.** A caret range on `0.x`
+  covers one minor line only.
+
+- **If you set flips, set them before `VIDIOC_S_SENSOR_FMT`** (see above). Code
+  that flipped afterwards gets a wrongly demosaiced image, as it always did; a
+  flip made mid-stream now at least says so in the log.
+
+- **Run `idf.py reconfigure`** in an existing build tree to pick up
+  `CAMERA_IMX708_LINK_FREQ`. A stale `sdkconfig` falls back to 450 MHz, which
+  is what earlier releases ran at.
+
+- **`set_format` now soft-resets the sensor**, so sensor state written outside
+  the driver does not survive a mode change. What the driver owns — flips, test
+  pattern and levels, link frequency — is re-applied; frame length returns to
+  the new mode's default, so set it after the mode.
+
 ## [0.3.0] - 2026-09-06
 
 ### Added

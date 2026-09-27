@@ -8,17 +8,17 @@ Espressif's stock sensor set covers OV-series and Arducam-branded modules, but
 **none of the Raspberry Pi IMX sensors** (IMX219 / IMX477 / IMX708) have a
 generic driver. This project fills that gap.
 
-> **Status: the IMX708 is a working camera.** It streams, the ISP is tuned, and
-> autofocus works — see the examples below, which take stills and video off the
-> board over USB serial or WiFi. The **IMX219 driver is written but has never
-> been flashed**; treat its register timing, MIPI lane rate and ISP tuning as
-> needing bench confirmation. See [Roadmap](#roadmap).
+> **Status: both drivers are working cameras.** The IMX708 streams in five
+> modes at 2–56 fps (or frames up to ~112 s long), with a tuned ISP, autofocus,
+> flips, test patterns and a selectable MIPI link frequency. The IMX219 streams,
+> takes stills and records H.264. The examples below take stills and video off
+> the board over USB serial or WiFi. See [Roadmap](#roadmap).
 
 ## Supported / planned sensors
 
 | Sensor | Module | Status |
 | ------ | ------ | ------ |
-| IMX708 | Pi Camera v3 / NoIR v3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264, live video over WiFi |
+| IMX708 | Pi Camera v3 / NoIR v3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264, live video over WiFi, variable frame rate and long exposure |
 | IMX219 | Pi Camera v2 / NoIR v2 | 🟢 Streaming, ISP tuning, stills, H.264 video — verified on hardware. Fixed-focus, no AF |
 | IMX477 | Pi HQ Camera | ⚪ Planned |
 
@@ -37,19 +37,30 @@ Modes implemented:
 The five IMX708 modes are one readout, not five: each is a centred digital
 crop of the same 2×2-binned 2304×1296 field, with identical timing. A smaller
 mode buys CSI bandwidth, PSRAM and encode time and pays in field of view. It
-cannot make the sensor faster — every mode reads out at 28 fps — nor buy a
-longer exposure, but it does recover frames the pipeline drops at full size:
-`imx708_video` measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode. Nothing is scaled, because the
+does not change the sensor's timing — the 28 fps above is every mode's default —
+but it does recover frames the pipeline drops at full size: `imx708_video`
+measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode. Nothing is scaled, because the
 sensor cannot: its scaling block is read-only, so a smaller mode is a narrower
 window rather than the whole scene shrunk. Pick one with
 `CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`, or at run time: `imx708_snapshot`
 takes a mode digit typed at its console and re-cycles the video stack around
 the switch, so resolution can change without a rebuild, a reflash or a reboot.
 
+**Frame rate is separate from mode.** `imx708_set_frame_length()` sets it live,
+in any mode, from 56 fps down to 1.14 fps, and past that the sensor's
+long-exposure shift carries a frame out to ~112 s — which is also what raises
+the exposure ceiling. 720p records a true 56 fps; 640×480 tears above 48, a
+pipeline limit not yet explained. The IMX708 also has all five of Raspberry Pi's
+test patterns (PN9 for checking the link bit-for-bit) and Raspberry Pi's three
+MIPI link frequencies, for moving the link's harmonics off a WiFi channel. The
+[component README](components/esp_cam_sensor_imx/README.md#frame-rate-exposure-and-test-controls)
+has the calls.
+
 **Autofocus** is implemented for the IMX708's DW9807 VCM
 (`components/esp_cam_sensor_imx/motors/dw9807`, I2C `0x0c`), driven by
-`esp_ipa`'s AF algorithm through `esp_video`'s pipeline controller. PDAF is out
-of scope.
+`esp_ipa`'s AF algorithm through `esp_video`'s pipeline controller. It is
+contrast-only: the driver installs the sensor's phase-detect correction gains,
+but nothing reads the PDAF data yet.
 
 **ISP tuning** lives in
 `components/esp_cam_sensor_imx/sensors/imx708/cfg/imx708_default.json` — AE,
@@ -74,14 +85,14 @@ The driver is published to the ESP Component Registry as
 [`mushbraindave/esp_cam_sensor_imx`](https://components.espressif.com/components/mushbraindave/esp_cam_sensor_imx):
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.3.0"
+idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.4.0"
 ```
 
 Or start from one of the seven examples it ships with, which bring their own
 `sdkconfig.defaults`:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.3.0:imx708_capture"
+idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.4.0:imx708_capture"
 ```
 
 The component's own [README](components/esp_cam_sensor_imx/README.md) is the
@@ -109,15 +120,17 @@ Each example's `sdkconfig.defaults` is a working reference for all of the above.
 | ------- | ------------ |
 | [`i2c_probe`](examples/i2c_probe/) | Walks the SCCB bus and reads chip IDs. The first thing to run on new hardware. |
 | [`imx708_capture`](components/esp_cam_sensor_imx/examples/imx708_capture/) | Streams frames and logs size and brightness per frame. |
-| [`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Also carries the focus-sweep and buffer-poison diagnostics. |
-| [`imx708_video`](components/esp_cam_sensor_imx/examples/imx708_video/) | ~8 s of 1080p H.264 into PSRAM, then the whole clip down USB serial. Measured **27–28 fps**. |
+| [`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Its console switches mode, flips, exposure bias, frame rate, test pattern and link frequency without a reflash. Also carries the focus-sweep and buffer-poison diagnostics. |
+| [`imx708_video`](components/esp_cam_sensor_imx/examples/imx708_video/) | ~8 s of H.264 into PSRAM, then the whole clip down USB serial. Any mode, 2–56 fps; measured **27.3 fps at 1080p** (encoder-bound) and a true **56.0 at 720p**. |
 | [`imx708_wifi_snapshot`](components/esp_cam_sensor_imx/examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
 | [`imx708_wifi_video`](components/esp_cam_sensor_imx/examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
-| [`imx219_capture`](examples/imx219_capture/) | The IMX219 equivalent of `imx708_capture`. **Untested on hardware.** |
+| [`imx219_snapshot`](components/esp_cam_sensor_imx/examples/imx219_snapshot/) | One still from a Camera Module v2, hardware-JPEG encoded, sent down USB serial. |
+| [`imx219_video`](components/esp_cam_sensor_imx/examples/imx219_video/) | ~8 s of IMX219 H.264 down USB serial. Measured **28.1 fps at 1632×1232**. |
+| [`imx219_capture`](examples/imx219_capture/) | The IMX219 equivalent of `imx708_capture`. The two above are the IMX219 examples verified on hardware. |
 | [`c6_link_check`](examples/c6_link_check/) | Five-second answer to "is the ESP32-C6 radio alive": brings up WiFi and scans. |
 | [`c6_wifi_sta`](examples/c6_wifi_sta/) | Associates with an AP, takes a DHCP lease, proves the route out. |
 
-All five IMX708 examples live **inside the component**, under
+All seven sensor examples — five IMX708, two IMX219 — live **inside the component**, under
 `components/esp_cam_sensor_imx/examples/`, so they are uploaded with it and can
 be fetched with `idf.py create-project-from-example`. Each is self-contained:
 the glue components an example needs — `imx_serial_img`, `imx_wifi`,
@@ -255,14 +268,17 @@ Done:
 7. ~~Video over WiFi~~ — live H.264, fragmented MP4 muxed on the board, playing
    in a browser. MJPEG was ruled out by the measured link ceiling (~3 fps at
    q90); H.264 at 3 Mbit/s carries the whole 28 fps.
+8. ~~IMX219 on hardware~~ — stills and H.264 video.
+9. ~~IMX708 resolution modes~~ — five, switchable at run time.
+10. ~~IMX708 frame rate, long exposure, test patterns, link frequency~~ — the
+    controls Raspberry Pi's driver has, ported.
 
 Next:
 
-8. **CCM calibration** against a colour chart under known illuminants, to
-   replace the seed matrix.
-9. **IMX477.**
-10. **First hardware run for the IMX219** — back-port the width-ceiling and
-    gain-enumeration lessons before trying it.
+11. **CCM calibration** against a colour chart under known illuminants, to
+    replace the seed matrix, and **lens-shading correction**.
+12. **Phase-detect autofocus**, reading the IMX708's PDAF grid.
+13. **IMX477.**
 
 ## Hardware notes
 
@@ -271,8 +287,13 @@ Next:
 - **XCLK:** 24 MHz. On the Waveshare board the Pi-style 15-pin CSI connector
   routes neither reset nor pwdn, and the sensor free-runs on its own oscillator
   — so there is **no host XCLK** and both pins are `-1`.
-- **Bayer order:** RGGB at default orientation. H/V flip changes the effective
-  Bayer phase, and the ISP config must track it if you enable flips.
+- **Bayer order:** RGGB at default orientation. A flip rotates the phase, and
+  both drivers report the rotated one — but `esp_video` only reads it at device
+  open and on `VIDIOC_S_SENSOR_FMT`, so **set flips before the format**, or the
+  ISP demosaics on the wrong phase with no error.
+- **Resetting the P4 does not reset the camera.** The CSI connector routes
+  neither reset nor power-down, so the sensor keeps the last boot's state; both
+  drivers soft-reset it whenever a mode is set.
 - **Width ceiling between 1920 and 2048 px.** At 2304 wide, scene data ran out
   around x=1918 and the edge columns duplicated each other exactly 2048 px
   apart. The limit is in the datapath, not the sensor — Espressif ship every P4

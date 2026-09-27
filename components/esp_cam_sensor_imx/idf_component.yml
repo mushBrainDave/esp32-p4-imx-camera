@@ -1,9 +1,11 @@
-version: "0.3.0"
+version: "0.4.0"
 description: >-
   Sony IMX-series MIPI-CSI camera sensor drivers for the ESP32-P4
   esp_cam_sensor / esp_video framework, plus the DW9807 autofocus VCM. Brings
   the Raspberry Pi Camera Module 3 (IMX708) to the ESP32-P4: streaming, ISP
-  tuning, autofocus and five resolution modes switchable at run time. Also
+  tuning, autofocus, five resolution modes switchable at run time, 2-56 fps
+  and long exposures, flips, test patterns and a selectable MIPI link
+  frequency. Also
   drives the Raspberry Pi Camera Module v2 / NoIR v2
   (IMX219): streaming, ISP tuning, stills and H.264 video, verified on hardware.
   The v2 module is fixed-focus, so no autofocus there.

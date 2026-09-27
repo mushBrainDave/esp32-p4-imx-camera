@@ -30,8 +30,9 @@ stack per mode so each one gets a pipeline built for its own geometry:
   reboot. This is the demonstration that resolution is an application's choice
   at run time; the `#define`s above exist only because nothing else fed the
   index in. The same prompt also sets the flips (`h`, `v`, `n` to clear) and
-  the exposure (`-` and `+` for a stop either way, `a` back to auto) and the
-  frame rate (`f`), each one keystroke, each applied to the next capture.
+  the exposure (`-` and `+` for a stop either way, `a` back to auto), the
+  frame rate (`f`), the sensor test pattern (`t`) and the MIPI link frequency
+  (`l`), each one keystroke, each applied to the next capture.
 - **`MODE_CYCLE`** walks the whole mode table off one boot, largest to
   smallest. Five frames of one scene at one lens position is the only honest
   way to compare modes — separate runs differ by exposure and framing as much
@@ -82,8 +83,8 @@ ran out.
 ### Frame rate
 
 `f` cycles the sensor's frame length: the mode's own (2672 lines, 28 fps), then
-4990 (15 fps), 7485 (10 fps) and 1336 (56 fps, the sensor's floor), round
-again. It goes through `imx708_set_frame_length()`, applied *after*
+4990 (15 fps), 7485 (10 fps), 1336 (56 fps, the sensor's floor) and 149694
+(a 2 s frame, on the sensor's long-exposure shift), round again. It goes through `imx708_set_frame_length()`, applied *after*
 `VIDIOC_STREAMON` because the control is live and a running stream is the case
 worth proving. The frame length goes into the file name (`_fl4990`), and the
 log reports the rate actually delivered, timed across DQBUFs, beside the
@@ -109,6 +110,28 @@ yet explained.
 A longer frame here does not brighten the picture: AE's exposure ceiling is
 read once, when `esp_video_init()` builds the pipeline, so only a manually set
 exposure can use the extra room.
+
+### Test patterns and link frequency
+
+`t` cycles the sensor's test pattern: off, colour bars, solid colour,
+fade-to-grey bars, PN9. PN9 is sent raw rather than as JPEG — it is noise, and
+it overruns the hardware JPEG encoder — and a raw PN9 frame is byte-identical
+from one boot to the next, so its CRC is a check on the whole link.
+
+`l` cycles the MIPI link frequency, 450, 447 and 453 MHz, applied before
+`VIDIOC_STREAMON` because the driver refuses it on a running stream. Frame
+timing is identical at all three, so PN9 at each should give the same CRC:
+
+```bash
+# PN9 at 800x600, at 450, 447 and 453 MHz
+python tools/capture.py --flash --seconds 150 --keys "t,t,t,t,3,l,3,l,3,q" --out linkfreq_pn9
+```
+
+Both go into the file name when not at their defaults, as `_bars`, `_solid`,
+`_fade` or `_pn9` and `_lf447` or `_lf453` — that run lands
+`imx708_800x600_pn9`, `imx708_800x600_pn9_lf447` and `imx708_800x600_pn9_lf453`.
+The full set of suffixes, in order, is
+`imx708_<w>x<h>[_h][_v][_ev±N][_fl<lines>][_<pattern>][_lf<MHz>]`.
 
 **Copy-pasteable commands for each mode** are in
 [`docs/cli-cookbook.md`](../../../../docs/cli-cookbook.md#resolution-modes),
