@@ -1,8 +1,10 @@
 # ==========================================================================
 # ESP-IDF build output
 # ==========================================================================
-# Each example builds into its own build/ directory.
+# Each example builds into its own build/ directory. A second board's build
+# goes in build-<board>/ alongside, with its sdkconfig inside it.
 build/
+build-*/
 
 # Generated per-target config. sdkconfig.defaults IS committed (it seeds these);
 # sdkconfig itself is machine/target-generated and should not be.

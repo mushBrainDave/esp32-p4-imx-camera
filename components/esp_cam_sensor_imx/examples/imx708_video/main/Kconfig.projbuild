@@ -1,0 +1,19 @@
+menu "IMX708 video example: board"
+
+    config EXAMPLE_CAM_POWER_EN_GPIO
+        int "GPIO that powers the camera module (-1 if none)"
+        range -1 54
+        default -1
+        help
+            Some boards route a GPIO to the camera connector's power-enable
+            line (CAM_IO0 on the Raspberry Pi pinout), which switches the
+            module's own regulators on and releases its reset. Until that GPIO
+            is driven high the IMX708 is unpowered: nothing answers on I2C,
+            and the I2C driver reports "clear bus failed" because the module's
+            pull-ups are dead too.
+
+            -1 for boards that power the connector permanently, such as the
+            Waveshare ESP32-P4-WIFI6. 0 on the Wireless-Tag WT9932P4-TINY,
+            whose BSP drives IO0 high before touching the camera.
+
+endmenu

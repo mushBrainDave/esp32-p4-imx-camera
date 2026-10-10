@@ -281,6 +281,61 @@ def write_h264(payload, path, extra, buf, notes):
     return mp4_path
 
 
+def is_usb_serial_jtag(port):
+    """True when the port is the chip's own USB-Serial/JTAG (303A:1001) rather
+    than a UART bridge such as the CH343."""
+    try:
+        from serial.tools import list_ports
+    except ImportError:
+        return False
+    for p in list_ports.comports():
+        if p.device.lower() == port.lower():
+            return p.vid == 0x303A and p.pid == 0x1001
+    return False
+
+
+def _open(port, baud):
+    # Build the port closed so DTR/RTS can be set before open asserts them.
+    s = serial.Serial()
+    s.port, s.baudrate, s.timeout = port, baud, 0.05
+    s.dtr = False
+    s.rts = False
+    s.open()
+    try:
+        s.set_buffer_size(rx_size=1 << 20)
+    except Exception:
+        pass
+    return s
+
+
+def open_and_reset(port, baud):
+    """Open the port and reset the board so the capture starts from boot."""
+    if not is_usb_serial_jtag(port):
+        # UART bridge: RTS drives EN, DTR drives IO0. DTR low keeps IO0 high,
+        # so it runs the app rather than the ROM loader.
+        s = _open(port, baud)
+        s.rts = True
+        time.sleep(0.15)
+        s.rts = False
+        return s
+
+    # USB-Serial/JTAG decodes DTR/RTS itself. pyserial's default open asserts
+    # both, and DTR then dropping while RTS is high is the chip's "reset into
+    # the ROM downloader" sequence - the board boots to "wait usb download".
+    # Open with both low and pulse RTS alone, which is esptool's hard reset.
+    # Windows' usbser driver does not send an RTS change to the device until
+    # DTR is written too, so each RTS write is followed by rewriting DTR at
+    # its current value - the same workaround esptool uses. Without it the
+    # pulse never leaves the PC and the board is not reset at all.
+    s = _open(port, baud)
+    s.rts = True
+    s.dtr = s.dtr
+    time.sleep(0.2)
+    s.rts = False
+    s.dtr = s.dtr
+    return s
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -340,17 +395,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     print(f'--- writing to {args.out} ---')
 
-    s = serial.Serial(args.port, args.baud, timeout=0.05)
-    try:
-        s.set_buffer_size(rx_size=1 << 20)
-    except Exception:
-        pass
-    # Reset so the capture starts from boot: RTS drives EN, DTR drives IO0.
-    # DTR low keeps IO0 high, so it runs the app rather than the ROM loader.
-    s.dtr = False
-    s.rts = True
-    time.sleep(0.15)
-    s.rts = False
+    s = open_and_reset(args.port, args.baud)
 
     keys = [k.strip() for k in args.keys.split(',')] if args.keys else []
     if args.interactive:

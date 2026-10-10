@@ -1,0 +1,30 @@
+# Overlay for the Wireless-Tag WT9932P4-TINY (WT0132P4-A1 module, ESP32-P4
+# chip revision v3.2). Layered on top of sdkconfig.defaults, with
+# its own build directory and sdkconfig so the v1.x board's build is untouched:
+#
+#   idf.py -B build-p4v3 -DSDKCONFIG=build-p4v3/sdkconfig \
+#          -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.p4v3" build
+#
+# Needs ESP-IDF v5.5 or later: v5.4 tops out at revision v1.99, and its
+# bootloader refuses a v3 chip.
+
+# v3.x silicon. esp_h264 picks its hardware register map from this
+# (hw/soc/esp32p4/hw_ver3), so it is not just a boot-time check. The
+# O_UYY_E_VYY input the ISP's YUV420 already matches is accepted by both
+# encoder generations, so the capture path itself does not change.
+CONFIG_ESP32P4_REV_MIN_301=y
+
+# 16 MB flash on this board, not the 32 MB of the v1.x one.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# Console on the chip's own USB-Serial/JTAG (the board's FUSB port). There is
+# no CH343 here, so the 2 Mbaud UART console in sdkconfig.defaults has nowhere
+# to go. USB-Serial/JTAG ignores the baud rate the host asks for and runs at
+# full-speed USB, which is faster than the old 2 Mbaud link anyway.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# The camera connector's power-enable line is wired to IO0 on this board, and
+# the IMX708 stays unpowered until it is driven high (the vendor BSP does the
+# same, in WT_BSP boards/WT9932P4-TINY/board.c). Same I2C pins as the
+# Waveshare board otherwise: SCL GPIO8, SDA GPIO7.
+CONFIG_EXAMPLE_CAM_POWER_EN_GPIO=0
