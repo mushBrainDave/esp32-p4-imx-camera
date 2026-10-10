@@ -36,6 +36,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "linux/videodev2.h"
@@ -366,6 +367,23 @@ void app_main(void)
      * level is consulted.
      */
     esp_log_level_set("esp_ipa_af", ESP_LOG_DEBUG);
+#endif
+
+#if CONFIG_EXAMPLE_CAM_POWER_EN_GPIO >= 0
+    /*
+     * Power the camera module before anything talks to it. See the Kconfig
+     * help for EXAMPLE_CAM_POWER_EN_GPIO. 100 ms is what the board vendor's
+     * BSP waits, and covers the module's regulators settling and the sensor
+     * coming out of reset.
+     */
+    gpio_config_t cam_pwr = {
+        .pin_bit_mask = 1ULL << CONFIG_EXAMPLE_CAM_POWER_EN_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&cam_pwr);
+    gpio_set_level(CONFIG_EXAMPLE_CAM_POWER_EN_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    ESP_LOGI(TAG, "camera power enabled on GPIO%d", CONFIG_EXAMPLE_CAM_POWER_EN_GPIO);
 #endif
 
     if (esp_video_init(&cam_config) != ESP_OK) {
