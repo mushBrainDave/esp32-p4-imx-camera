@@ -219,9 +219,10 @@ AE or AWB.
 - **The CCM is a seed, not a calibration.** Real values come from shooting a
   colour chart under known illuminants and solving for the matrix. The rows sum
   to 1.0 so neutrals stay neutral, and it is deliberately gentler than
-  Espressif's OV5647 matrix because a **NoIR** module has no IR-cut filter —
-  infrared contaminates all three channels and aggressive saturation amplifies
-  that error.
+  Espressif's OV5647 matrix. It was set up on a regular Camera Module 3, with an
+  IR-cut filter. A **NoIR** module has none, so infrared contaminates all three
+  channels; aggressive saturation would amplify that error, and on a NoIR
+  module the colour is further off than on the module the seed was made on.
 - **The `af` scan band needs calibrating.** `af.min_pos` / `af.max_pos` (380 and
   940) come from libcamera's Camera Module 3 tuning data, not from your module.
   See *Autofocus* below.

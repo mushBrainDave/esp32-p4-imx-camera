@@ -15,9 +15,9 @@
  *   2. "detected IMX708, PID=0x0708" (from the driver)
  *   3. Non-zero frames with changing seq   -> the IMX708 is actually streaming
  *
- * NoIR reminder: with no IR-cut filter, colours look pink/odd until ISP tuning
- * exists. That is EXPECTED here — this test only checks that real pixel data
- * flows, not colour accuracy.
+ * Colour reminder: this test applies no ISP tuning, so colours look odd - and
+ * pink on a NoIR module, which has no IR-cut filter. That is EXPECTED here -
+ * this test only checks that real pixel data flows, not colour accuracy.
  */
 #include <stdio.h>
 #include <string.h>

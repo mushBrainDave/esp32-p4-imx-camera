@@ -351,8 +351,9 @@ viewers=0  resyncs=5  frame_skip=1
   board's log for `viewer left after N frames`, which reports how long the
   connection actually lasted. Both of the bugs above presented this way.
 - **Colours wrong** — ISP tuning, shared with every other example here. The CCM
-  is an uncalibrated seed and the module is NoIR, so infrared contaminates all
-  three channels.
+  is an uncalibrated seed, set up on a regular Camera Module 3. On a NoIR
+  module, which has no IR-cut filter, infrared contaminates all three channels
+  as well.
 
 ## Traps inherited from the snapshot example
 

@@ -37,8 +37,8 @@ the P4 instead of a stale `esp32` default.)
   the driver against the CSI receiver. Watch for the `detected IMX708` line to
   confirm the driver ran.
 - **frames arrive but `avg` is 0 or 255** — streaming works; exposure/gain or
-  ISP config is off. That's ISP-tuning territory, not a wiring fault — and with
-  the NoIR module, off-looking colour is expected until tuning exists.
+  ISP config is off. That's ISP-tuning territory, not a wiring fault — and on a
+  NoIR module especially, off-looking colour is expected until tuning exists.
 
 ## Scope
 
