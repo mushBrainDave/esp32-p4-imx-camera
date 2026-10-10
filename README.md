@@ -65,8 +65,9 @@ but nothing reads the PDAF data yet.
 **ISP tuning** lives in
 `components/esp_cam_sensor_imx/sensors/imx708/cfg/imx708_default.json` — AE,
 AWB, denoise, gamma/sharpen, metering weights, saturation and CCM. The CCM is a
-deliberately gentle seed rather than a calibration, because the NoIR module has
-no IR-cut filter and infrared contaminates all three channels.
+deliberately gentle seed rather than a calibration, set up on a regular (IR-cut)
+Camera Module 3. A NoIR module has no IR-cut filter, so infrared contaminates all
+three channels and its colour is further off again on this seed.
 
 Development board is a **Waveshare ESP32-P4-WIFI6**, on **ESP-IDF v5.4.0**.
 

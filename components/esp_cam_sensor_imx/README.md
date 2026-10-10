@@ -391,8 +391,9 @@ generated config.
   expects and autofocus silently scores unrelated heap memory. The examples carry
   a version-guarded workaround in their `CMakeLists.txt`.
 - The CCM in the tuning config is a deliberately gentle seed rather than a
-  calibration, because the NoIR module has no IR-cut filter and infrared
-  contaminates all three channels.
+  calibration, set up on a regular (IR-cut) Camera Module 3. A NoIR module has
+  no IR-cut filter, so infrared contaminates all three channels and its colour
+  is further off again on this seed.
 
 ## Licensing
 

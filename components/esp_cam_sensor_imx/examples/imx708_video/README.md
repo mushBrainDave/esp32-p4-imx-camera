@@ -264,5 +264,6 @@ keeps to it - or buy transfer time: the clip is bitrate-bound, not frame-bound.
   `capture.py` printed why. The stream itself is fine; try
   `python tools/mp4.py` on it directly for the full error.
 - **Video plays but the colours are wrong** — that is ISP tuning, shared with
-  the snapshot example. The CCM has not been calibrated against a colour chart,
-  and the module is NoIR, so infrared contaminates all three channels.
+  the snapshot example. The CCM has not been calibrated against a colour chart;
+  it is a seed set up on a regular Camera Module 3. On a NoIR module, which has
+  no IR-cut filter, infrared contaminates all three channels as well.
