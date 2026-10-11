@@ -12,7 +12,9 @@ generic driver. This project fills that gap.
 > modes at 2–56 fps (or frames up to ~112 s long), with a tuned ISP, autofocus,
 > flips, test patterns and a selectable MIPI link frequency. The IMX219 streams,
 > takes stills and records H.264. The examples below take stills and video off
-> the board over USB serial or WiFi. See [Roadmap](#roadmap).
+> the board over USB serial or WiFi. The driver also runs on **ESP32-P4 v3.x
+> silicon**: a board config for the v3.2 WT9932P4-TINY records IMX708 H.264
+> there, under ESP-IDF v5.5. See [Roadmap](#roadmap).
 
 ## Supported / planned sensors
 
@@ -69,7 +71,38 @@ deliberately gentle seed rather than a calibration, set up on a regular (IR-cut)
 Camera Module 3. A NoIR module has no IR-cut filter, so infrared contaminates all
 three channels and its colour is further off again on this seed.
 
-Development board is a **Waveshare ESP32-P4-WIFI6**, on **ESP-IDF v5.4.0**.
+The main development board is a **Waveshare ESP32-P4-WIFI6** (P4 v1.3 silicon), on
+**ESP-IDF v5.4.0**.
+
+### ESP32-P4 v3.x chips
+
+There is now a config for running the driver on **v3.x ESP32-P4 silicon**:
+[`sdkconfig.defaults.p4v3`](components/esp_cam_sensor_imx/examples/imx708_video/sdkconfig.defaults.p4v3)
+in `imx708_video`. It layers on top of the example's normal `sdkconfig.defaults`
+and builds into its own `build-p4v3/` directory, so the v1.x build is untouched.
+It targets the **Wireless-Tag WT9932P4-TINY** (WT0132P4-A1 module, P4 v3.2) and
+sets four things:
+
+- v3.x silicon, which also selects esp_h264's v3 register map.
+- 16 MB flash.
+- The USB-Serial/JTAG console.
+- IO0 as the camera power enable.
+
+The driver itself needed no changes.
+
+- **Needs ESP-IDF v5.5 or later.** v5.4 cannot target a v3 chip. Measured on v5.5.5.
+- **Measured 2026-10-10:** 27.8 fps at 1080p and a true 56.0 fps at 720p, 0 failed
+  frames. That is about the same as v1.3. The hardware H.264 encoder is still the
+  1080p limit, and 56 fps is the sensor's ceiling, so the faster chip has little
+  room to show.
+- **Mind the cable.** The TINY's CSI connector is numbered opposite to a Pi's, with
+  an always-on 3.3 V on pin 1. The stock Pi cable shorts it and burnt out a camera
+  here. Use the Type A FPC from Wireless-Tag's WTDK-CAM-2336.
+
+Build commands and the full results are in
+[`imx708_video`'s README](components/esp_cam_sensor_imx/examples/imx708_video/README.md#on-the-wt9932p4-tiny-esp32-p4-v32).
+Only `imx708_video` has the overlay so far. The other examples' serial transport
+still assumes a UART console.
 
 ## How it plugs in
 
@@ -122,7 +155,7 @@ Each example's `sdkconfig.defaults` is a working reference for all of the above.
 | [`i2c_probe`](examples/i2c_probe/) | Walks the SCCB bus and reads chip IDs. The first thing to run on new hardware. |
 | [`imx708_capture`](components/esp_cam_sensor_imx/examples/imx708_capture/) | Streams frames and logs size and brightness per frame. |
 | [`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Its console switches mode, flips, exposure bias, frame rate, test pattern and link frequency without a reflash. Also carries the focus-sweep and buffer-poison diagnostics. |
-| [`imx708_video`](components/esp_cam_sensor_imx/examples/imx708_video/) | ~8 s of H.264 into PSRAM, then the whole clip down USB serial. Any mode, 2–56 fps; measured **27.3 fps at 1080p** (encoder-bound) and a true **56.0 at 720p**. |
+| [`imx708_video`](components/esp_cam_sensor_imx/examples/imx708_video/) | ~8 s of H.264 into PSRAM, then the whole clip down USB serial. Any mode, 2–56 fps; measured **27.3 fps at 1080p** (encoder-bound) and a true **56.0 at 720p**. Also builds for P4 v3.x (WT9932P4-TINY) via `sdkconfig.defaults.p4v3`. |
 | [`imx708_wifi_snapshot`](components/esp_cam_sensor_imx/examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
 | [`imx708_wifi_video`](components/esp_cam_sensor_imx/examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
 | [`imx219_snapshot`](components/esp_cam_sensor_imx/examples/imx219_snapshot/) | One still from a Camera Module v2, hardware-JPEG encoded, sent down USB serial. |
