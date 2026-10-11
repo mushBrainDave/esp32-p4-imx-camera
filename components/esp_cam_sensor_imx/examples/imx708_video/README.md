@@ -3,7 +3,9 @@
 Records a few seconds of 1080p H.264 from the IMX708 and sends it down the same
 USB cable that carries the log. No SD card. `tools/capture.py` picks the clip up
 and writes an `.mp4` you can double-click. Pins preset for the Waveshare
-ESP32-P4-WIFI6.
+ESP32-P4-WIFI6. A board overlay also builds it for the Wireless-Tag
+WT9932P4-TINY, which has ESP32-P4 v3.2 silicon. See
+[On the WT9932P4-TINY](#on-the-wt9932p4-tiny-esp32-p4-v32).
 
 This is the moving-picture counterpart to
 [`imx708_snapshot`](../imx708_snapshot/), and shares its serial transport
@@ -38,6 +40,73 @@ To rebuild the `.mp4` from a stream you already have:
 ```bash
 python tools/mp4.py clip/imx708.h264 clip/imx708.mp4 --fps 28
 ```
+
+### On the WT9932P4-TINY (ESP32-P4 v3.2)
+
+The TINY's WT0132P4-A1 module carries ESP32-P4 revision v3.2. ESP-IDF v5.4 cannot
+target that revision, so this board needs **ESP-IDF v5.5 or later**. Measured on
+v5.5.5. `sdkconfig.defaults.p4v3` layers on top of `sdkconfig.defaults` and builds
+into its own directory, so the Waveshare build is left alone. It sets four things:
+
+- v3.x silicon. `esp_h264` picks its hardware register map from this setting.
+- 16 MB flash.
+- The console on the chip's own USB-Serial/JTAG, which is the board's FUSB port.
+- `EXAMPLE_CAM_POWER_EN_GPIO=0`, because the camera connector stays unpowered
+  until IO0 is driven high.
+
+The driver itself is the same as on the Waveshare.
+
+> **Check the cable before you power it.** The board's CSI connector is 15-pin,
+> 1.0 mm, and numbered opposite to a Raspberry Pi's. Its pin 1 is an always-on
+> 3.3 V. The stock Pi 15-to-15 cable shorts that rail to ground through the
+> camera, and it burnt out a Camera Module 3 here. Use the Type A FPC that ships
+> with Wireless-Tag's WTDK-CAM-2336. With the camera and cable fitted and the
+> board unplugged, measure between the 3V3 and GND header pins. If it reads near
+> 0 Ω, stop.
+
+`capture.py --flash` only knows the default build directory, so build and flash
+with `idf.py`, then let `capture.py` listen. Run these from the example directory:
+
+```bash
+idf.py -B build-p4v3 -DSDKCONFIG=build-p4v3/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.p4v3" build
+```
+
+```bash
+idf.py -B build-p4v3 -DSDKCONFIG=build-p4v3/sdkconfig "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.p4v3" -p COM7 flash
+```
+
+```bash
+python ../../../../tools/capture.py --port COM7 --out tiny_clip
+```
+
+`managed_components/` and `dependencies.lock` are resolved per ESP-IDF version.
+If the same checkout has already been built with v5.4 for the Waveshare, move
+both aside before the v5.5 build, and back again afterwards. The two versions
+cannot share one set.
+
+Measured 2026-10-10 on an IMX708 NoIR (Camera Module 3 NoIR). Both clips decode
+in ffmpeg without an error:
+
+```
+I imx708_video: H.264 1920x1072 @ 28 fps, 4000000 bit/s, GOP 28, QP 20-45
+I imx708_video: recorded 222 frames (8 IDR, 0 failed) in 7968 ms - 27.8 fps, stopped on: time
+I imx708_video: encode 35632 us mean, 36192 us worst (35700 us per frame available)
+```
+
+| Mode | `VIDEO_FPS` | Sensor | Recorded | Encode mean / worst / budget |
+| ---- | ----------- | ------ | -------- | ---------------------------- |
+| 1920x1080 | 0 | 28.011 | 27.8 fps, 222 frames | 35.6 / 36.2 / 35.7 ms |
+| 1280x720 | 56 | 55.981 | 56.0 fps, 448 frames | 15.6 / 15.8 / 17.9 ms |
+
+These results match the Waveshare's v1.3 silicon (the table under
+[Frame rate](#frame-rate)). At 1080p the encoder is still the limit. It runs
+about 0.7 ms per frame faster here, about 2%, which is enough to record 27.8 fps
+against 27.1 to 27.3 on the Waveshare. The CPU went from 360 to 400 MHz, an 11%
+increase, so the encoder is not CPU-bound. Whether the 2% comes from the silicon
+or from the newer ESP-IDF v5.5.5 and esp_h264 1.4.1 has not been separated. At 720p
+the full 56 fps holds with 2 ms to spare. In the 720p clip the mean frame interval
+is 17.85 ms, and no interval is over 25 ms, so no frames were dropped. The
+transfer takes about 18 s for a 4 MB clip over USB-Serial/JTAG.
 
 ## Checking the result with ffmpeg
 

@@ -248,9 +248,14 @@ Things worth knowing before relying on them:
 `imx708_snapshot`'s console drives all of these from single keystrokes, and
 `imx708_video` takes a frame rate as `VIDEO_FPS` — 720p records a true 56 fps.
 
-Developed and measured on a **Waveshare ESP32-P4-WIFI6** with **ESP-IDF v5.4.0**.
-That is the only combination this has run on; the manifest's `idf: ">=5.4"` is
-what has been on the bench, not the oldest release that might compile.
+Developed and measured on a **Waveshare ESP32-P4-WIFI6** (P4 v1.3) with
+**ESP-IDF v5.4.0**. The IMX708 also records H.264 with the driver unchanged on a
+**Wireless-Tag WT9932P4-TINY** (P4 v3.2) with **ESP-IDF v5.5.5**: 27.8 fps at
+1080p and 56.0 fps at 720p (see
+[`imx708_video`](examples/imx708_video/README.md#on-the-wt9932p4-tiny-esp32-p4-v32)).
+Those are the only two combinations this has run on. The manifest's
+`idf: ">=5.4"` reflects what has been on the bench, not the oldest release that
+might compile.
 
 ## How it plugs in
 
