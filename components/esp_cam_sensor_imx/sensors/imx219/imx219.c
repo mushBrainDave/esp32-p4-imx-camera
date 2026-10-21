@@ -490,6 +490,15 @@ static esp_err_t imx219_set_digital_gain(esp_cam_sensor_device_t *dev, uint32_t 
 
 static esp_err_t imx219_set_test_pattern(esp_cam_sensor_device_t *dev, int enable)
 {
+    if(enable)
+    {
+        const esp_cam_sensor_format_t *format = dev->cur_format;
+        esp_err_t ret = imx219_write16(dev->sccb_handle, IMX219_REG_TEST_PATTERN_X_OFFSET, 0);
+        if (ret == ESP_OK) ret = imx219_write16(dev->sccb_handle, IMX219_REG_TEST_PATTERN_Y_OFFSET, 0);
+        if (ret == ESP_OK) ret = imx219_write16(dev->sccb_handle, IMX219_REG_TEST_PATTERN_WIDTH, format->width);
+        if (ret == ESP_OK) ret = imx219_write16(dev->sccb_handle, IMX219_REG_TEST_PATTERN_HEIGHT, format->height);
+        if (ret != ESP_OK) return ret;
+    }
     return imx219_write16(dev->sccb_handle, IMX219_REG_TEST_PATTERN_H,
                           enable ? IMX219_TEST_PATTERN_COLORBARS : IMX219_TEST_PATTERN_DISABLE);
 }
