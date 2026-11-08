@@ -1,0 +1,19 @@
+# Validated against MediaMTX v1.21.3. Replace the camera address as needed.
+# Qualified source-loss recovery on detail15; global server setting.
+readTimeout: 3s
+rtsp: true
+rtspAddress: :8554
+rtspTransports: [tcp]
+hls: true
+hlsAddress: :8888
+hlsVariant: fmp4
+hlsSegmentDuration: 900ms
+rtmp: false
+webrtc: false
+srt: false
+moq: false
+paths:
+  cam01:
+    source: rtsp://CAMERA_IP:8554/live
+    rtspTransport: tcp
+    sourceOnDemand: false
