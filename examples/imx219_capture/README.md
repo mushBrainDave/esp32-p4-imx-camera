@@ -8,8 +8,11 @@ brightness per frame.
 
 Open [`main/imx219_capture_main.c`](main/imx219_capture_main.c) and set the
 `EXAMPLE_SCCB_*`, `EXAMPLE_CAM_RESET_PIN`, and `EXAMPLE_CAM_PWDN_PIN` values for
-your board. The defaults target the ESP32-P4-Function-EV-Board camera header —
-**verify them against your schematic.**
+your board. This workspace uses Guition JC-ESP32P4-M3-DEV: GPIO8 SCL / GPIO7 SDA,
+verified against schematic pages 4 and 6 and board-specific OV5647 configuration.
+The tracked defaults select P4 v1.x and 16 MB flash. See workspace
+`PROJECT_STATUS.md` for evidence. Build using
+`idf.py -B build-guition -D SDKCONFIG=build-guition/sdkconfig reconfigure build`.
 
 ## Build & flash
 

@@ -9,6 +9,24 @@ answers at `0x10` (sensor), `0x18` (the board's audio codec) and `0x64` (PMIC)
 only, with nothing at `0x0c` where the Camera Module 3's VCM sits. In its place
 is an auto-exposure trace, which is this sensor's equivalent diagnostic.
 
+
+## Local Guition board build
+
+This workspace targets JC-ESP32P4-M3-DEV, P4 v1.3, 16 MB flash,
+32 MB hex PSRAM, SCCB SCL8/SDA7. Use a fresh generated configuration:
+
+```bash
+idf.py -B build-guition -D SDKCONFIG=build-guition/sdkconfig reconfigure build
+idf.py -B build-guition -D SDKCONFIG=build-guition/sdkconfig -p /dev/ttyUSB0 flash
+```
+
+Verify the generated revision range (v1.0–v1.99), flash size and image headers
+before flashing. Then run `tools/capture.py` from the repository root with
+`--port /dev/ttyUSB0 --baud 460800 --project components/esp_cam_sensor_imx/examples/imx219_snapshot`
+and an output name, **without `--flash`**: the helper's current flash command
+does not select `build-guition` or its generated configuration. Existing build
+configurations retain settings even after defaults change.
+
 ## Build and run
 
 ```bash
@@ -111,3 +129,11 @@ which reads as a colour cast rather than as a broken config.
 | `IMAGE_OUT_SD` | 0 | also write a 24-bit BMP to `/sdcard/imx219.bmp`; costs ~8 s |
 | `TEST_PATTERN` | 0 | sensor colour bars. Clean bars mean the MIPI/CSI/ISP transport is healthy and a bad picture is optics or tuning |
 | `POISON_BUFFERS` | 0 | fill capture buffers with `0xA5` first and count survivors. Proves a frame is live DMA rather than untouched PSRAM — worth having because untouched PSRAM averages mid-scale and is easy to mistake for a real exposure |
+
+### P4 v1.3 IPA compatibility
+
+The manifest overrides IPA with the pinned checkout documented in
+`third_party/README.md` at the repository root. Fetch it before a clean build.
+This avoids the IDF 6.x registry 2.4.0 illegal-instruction crash on pre-v3 chips.
+Serial diagnostics use 460800 baud because 2 Mbaud lost bytes on this setup.
+Use a sufficiently long capture timeout for recorded video transfer.

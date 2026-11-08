@@ -33,14 +33,13 @@
 #include "esp_video_init.h"
 #include "esp_video_device.h"
 
-/* ---- Board pins: Waveshare ESP32-P4-WIFI6 (SKU 32020) -------------------- *
- * Confirmed against Waveshare docs + the ESPP/esp-bsp board definition:
- *   - Camera SCCB shares the internal I2C bus (also used by the audio codec
- *     and touch controller): port 0, SCL = GPIO8, SDA = GPIO7.
- *   - The RPi-style 15-pin CSI connector does NOT route reset or power-down to
- *     the ESP32-P4; the sensor free-runs off its own onboard oscillator. So
- *     reset/pwdn are -1 and no host XCLK is driven.
- * If you move to a different board, re-check these.                          */
+/* ---- Guition JC-ESP32P4-M3-DEV ----------------------------------------- *
+ * Schematic page 4: ES_I2C_SDA/SCL -> GPIO7/8.
+ * Page 6: J3 camera pin 13 SCL via R30, pin 14 SDA via R32 (0 ohm).
+ * The board-specific OV5647 sdkconfig uses port 0, SCL 8, SDA 7,
+ * reset/pwdn -1. J3 does not show a host-driven XCLK or reset/pwdn.
+ * See workspace PROJECT_STATUS.md for source links and verification evidence.
+ */
 #define EXAMPLE_SCCB_I2C_PORT   0
 #define EXAMPLE_SCCB_SCL_PIN    8
 #define EXAMPLE_SCCB_SDA_PIN    7
