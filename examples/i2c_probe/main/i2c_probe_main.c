@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  *
- * Camera I2C / SCCB probe for the ESP32-P4 (Waveshare ESP32-P4-WIFI6).
+ * Camera I2C / SCCB probe for the Guition JC-ESP32P4-M3-DEV.
  *
  * This talks to the sensor over I2C ONLY — no MIPI, no ISP, no esp_video, no
  * sensor driver. It exists to validate the boring-but-critical physical layer
@@ -14,7 +14,7 @@
  *   - the SCCB bus reaches the connector on GPIO8/GPIO7
  *   - the sensor answers at its I2C address and returns the right chip ID
  *
- * Works with ANY Raspberry Pi camera module you happen to have plugged in:
+ * Probes these known Raspberry Pi sensor IDs:
  * it scans the whole bus, then tries a chip-ID read at each known camera
  * address and prints which sensor (if any) it found.
  *
@@ -29,6 +29,11 @@
 #include "freertos/task.h"
 #include "driver/i2c_master.h"
 
+/* Guition schematic: page 4 ES_I2C_SDA/SCL -> GPIO7/8;
+ * page 6 J3 pins 14/13 -> ES_I2C_SDA/SCL through R32/R30 (0 ohm).
+ * Board-specific OV5647 sdkconfig corroborates port 0, SCL 8, SDA 7.
+ * Evidence and source links: workspace PROJECT_STATUS.md.
+ */
 #define I2C_PORT     0
 #define I2C_SCL_PIN  8
 #define I2C_SDA_PIN  7
@@ -121,7 +126,7 @@ void app_main(void)
     }
 
     if (cam_found) {
-        ESP_LOGI(TAG, "==== CAMERA I2C LINK OK — physical layer validated ====");
+        ESP_LOGI(TAG, "==== CAMERA I2C LINK OK — sensor control link validated ====");
     } else {
         ESP_LOGE(TAG, "No known camera answered. If the scan above listed the codec/touch but not the "
                       "camera, the bus works and the issue is the camera cable/orientation/power.");

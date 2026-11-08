@@ -104,6 +104,34 @@ static const imx219_reginfo_t imx219_mode_1640x1232_regs[] = {
     {IMX219_REG_END, 0x00},
 };
 
+/* Full sensor field, same PLL/HTS, VTS 52900: ~1 fps with long-exposure headroom. */
+static const imx219_reginfo_t imx219_mode_1640x1232_1fps_regs[] = {
+    {IMX219_REG_X_ADD_STA_H, 0x00}, {IMX219_REG_X_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_X_ADD_END_H, 0x0c}, {IMX219_REG_X_ADD_END_L, 0xcf},   /* 3279 */
+    {IMX219_REG_Y_ADD_STA_H, 0x00}, {IMX219_REG_Y_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_Y_ADD_END_H, 0x09}, {IMX219_REG_Y_ADD_END_L, 0x9f},   /* 2463 */
+    {IMX219_REG_X_OUTPUT_SIZE_H, 0x06}, {IMX219_REG_X_OUTPUT_SIZE_L, 0x68}, /* 1640 */
+    {IMX219_REG_Y_OUTPUT_SIZE_H, 0x04}, {IMX219_REG_Y_OUTPUT_SIZE_L, 0xd0}, /* 1232 */
+    {IMX219_REG_BINNING_MODE_H, 0x01}, {IMX219_REG_BINNING_MODE_L, 0x01},   /* 2x2 normal */
+    {IMX219_REG_VTS_H, 0xce}, {IMX219_REG_VTS_L, 0xa4},               /* 52900 */
+    {IMX219_REG_END, 0x00},
+};
+
+/* Full field at 5 fps; PLL/HTS/binning unchanged, VTS only. */
+static const imx219_reginfo_t imx219_mode_1640x1232_5fps_regs[] = {
+    {IMX219_REG_X_ADD_STA_H, 0x00}, {IMX219_REG_X_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_X_ADD_END_H, 0x0c}, {IMX219_REG_X_ADD_END_L, 0xcf},   /* 3279 */
+    {IMX219_REG_Y_ADD_STA_H, 0x00}, {IMX219_REG_Y_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_Y_ADD_END_H, 0x09}, {IMX219_REG_Y_ADD_END_L, 0x9f},   /* 2463 */
+    {IMX219_REG_X_OUTPUT_SIZE_H, 0x06}, {IMX219_REG_X_OUTPUT_SIZE_L, 0x68}, /* 1640 */
+    {IMX219_REG_Y_OUTPUT_SIZE_H, 0x04}, {IMX219_REG_Y_OUTPUT_SIZE_L, 0xd0}, /* 1232 */
+    {IMX219_REG_BINNING_MODE_H, 0x01}, {IMX219_REG_BINNING_MODE_L, 0x01},   /* 2x2 normal */
+    {IMX219_REG_VTS_H, 0x29}, {IMX219_REG_VTS_L, 0x54},               /* 10580 */
+    {IMX219_REG_END, 0x00},
+};
+
+
+
 /*
  * Mode: 1632x1232, 2x2 binned, RAW10, ~30fps. The 1640 mode above with 8
  * columns trimmed - 4 from each side - so the output width is a whole number of
@@ -137,6 +165,41 @@ static const imx219_reginfo_t imx219_mode_1632x1232_regs[] = {
 };
 
 /*
+ * 1280x720 RAW10 / 30 fps: centered 2560x1440 sensor window, 2x2 binning.
+ * X=360..2919, Y=512..1951. Starts are multiples of four, retaining RGGB.
+ * Same PLL, HTS 3448 and VTS 1763 as mode 2: unchanged line/exposure timing.
+ * This is a crop (78% horizontal / 58% vertical array coverage), not scaling.
+ */
+static const imx219_reginfo_t imx219_mode_1280x720_regs[] = {
+    {IMX219_REG_X_ADD_STA_H, 0x01}, {IMX219_REG_X_ADD_STA_L, 0x68},
+    {IMX219_REG_X_ADD_END_H, 0x0b}, {IMX219_REG_X_ADD_END_L, 0x67},
+    {IMX219_REG_Y_ADD_STA_H, 0x02}, {IMX219_REG_Y_ADD_STA_L, 0x00},
+    {IMX219_REG_Y_ADD_END_H, 0x07}, {IMX219_REG_Y_ADD_END_L, 0x9f},
+    {IMX219_REG_X_OUTPUT_SIZE_H, 0x05}, {IMX219_REG_X_OUTPUT_SIZE_L, 0x00},
+    {IMX219_REG_Y_OUTPUT_SIZE_H, 0x02}, {IMX219_REG_Y_OUTPUT_SIZE_L, 0xd0},
+    {IMX219_REG_BINNING_MODE_H, 0x01}, {IMX219_REG_BINNING_MODE_L, 0x01},
+    {IMX219_REG_VTS_H, 0x06}, {IMX219_REG_VTS_L, 0xe3},
+    {IMX219_REG_END, 0x00},
+};
+
+/*
+ * 1536x864 RAW10 / 30 fps: centered 3072x1728 window with 2x2 binning.
+ * X=104..3175, Y=368..2095. Four-pixel aligned starts preserve RGGB.
+ * Same PLL/HTS/VTS/exposure timing as the other binned 30 fps modes.
+ */
+static const imx219_reginfo_t imx219_mode_1536x864_regs[] = {
+    {IMX219_REG_X_ADD_STA_H, 0x00}, {IMX219_REG_X_ADD_STA_L, 0x68},
+    {IMX219_REG_X_ADD_END_H, 0x0c}, {IMX219_REG_X_ADD_END_L, 0x67},
+    {IMX219_REG_Y_ADD_STA_H, 0x01}, {IMX219_REG_Y_ADD_STA_L, 0x70},
+    {IMX219_REG_Y_ADD_END_H, 0x08}, {IMX219_REG_Y_ADD_END_L, 0x2f},
+    {IMX219_REG_X_OUTPUT_SIZE_H, 0x06}, {IMX219_REG_X_OUTPUT_SIZE_L, 0x00},
+    {IMX219_REG_Y_OUTPUT_SIZE_H, 0x03}, {IMX219_REG_Y_OUTPUT_SIZE_L, 0x60},
+    {IMX219_REG_BINNING_MODE_H, 0x01}, {IMX219_REG_BINNING_MODE_L, 0x01},
+    {IMX219_REG_VTS_H, 0x06}, {IMX219_REG_VTS_L, 0xe3},
+    {IMX219_REG_END, 0x00},
+};
+
+/*
  * Mode: 3280x2464, full resolution, RAW10, ~15fps. VTS = 0x0dc6.
  * High bandwidth — bring this up only after the binned mode streams cleanly.
  */
@@ -152,6 +215,33 @@ static const imx219_reginfo_t imx219_mode_3280x2464_regs[] = {
     {IMX219_REG_END, 0x00},
 };
 
+/* Real 15fps; same crop/binning/PLL/HTS, doubled frame length. */
+static const imx219_reginfo_t imx219_mode_1640x1232_15fps_regs[] = {
+    {IMX219_REG_X_ADD_STA_H, 0x00}, {IMX219_REG_X_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_X_ADD_END_H, 0x0c}, {IMX219_REG_X_ADD_END_L, 0xcf},   /* 3279 */
+    {IMX219_REG_Y_ADD_STA_H, 0x00}, {IMX219_REG_Y_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_Y_ADD_END_H, 0x09}, {IMX219_REG_Y_ADD_END_L, 0x9f},   /* 2463 */
+    {IMX219_REG_X_OUTPUT_SIZE_H, 0x06}, {IMX219_REG_X_OUTPUT_SIZE_L, 0x68}, /* 1640 */
+    {IMX219_REG_Y_OUTPUT_SIZE_H, 0x04}, {IMX219_REG_Y_OUTPUT_SIZE_L, 0xd0}, /* 1232 */
+    {IMX219_REG_BINNING_MODE_H, 0x01}, {IMX219_REG_BINNING_MODE_L, 0x01},   /* 2x2 normal */
+    {IMX219_REG_VTS_H, 0x0d}, {IMX219_REG_VTS_L, 0xc6},               /* 3526 */
+    {IMX219_REG_END, 0x00},
+};
+
+/* Real 15fps; same crop/binning/PLL/HTS, doubled frame length. */
+static const imx219_reginfo_t imx219_mode_1632x1232_15fps_regs[] = {
+    {IMX219_REG_X_ADD_STA_H, 0x00}, {IMX219_REG_X_ADD_STA_L, 0x08},   /* 8    */
+    {IMX219_REG_X_ADD_END_H, 0x0c}, {IMX219_REG_X_ADD_END_L, 0xc7},   /* 3271 */
+    {IMX219_REG_Y_ADD_STA_H, 0x00}, {IMX219_REG_Y_ADD_STA_L, 0x00},   /* 0    */
+    {IMX219_REG_Y_ADD_END_H, 0x09}, {IMX219_REG_Y_ADD_END_L, 0x9f},   /* 2463 */
+    {IMX219_REG_X_OUTPUT_SIZE_H, 0x06}, {IMX219_REG_X_OUTPUT_SIZE_L, 0x60}, /* 1632 */
+    {IMX219_REG_Y_OUTPUT_SIZE_H, 0x04}, {IMX219_REG_Y_OUTPUT_SIZE_L, 0xd0}, /* 1232 */
+    {IMX219_REG_BINNING_MODE_H, 0x01}, {IMX219_REG_BINNING_MODE_L, 0x01},   /* 2x2 normal */
+    {IMX219_REG_VTS_H, 0x0d}, {IMX219_REG_VTS_L, 0xc6},               /* 3526 */
+    {IMX219_REG_END, 0x00},
+};
+
 #ifdef __cplusplus
 }
+
 #endif

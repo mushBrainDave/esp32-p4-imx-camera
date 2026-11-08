@@ -50,6 +50,12 @@ enum {
        CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT selects between, so renumbering
        them would silently change the mode of an existing build. */
     IMX219_FMT_1632x1232_RAW10_30FPS,
+    IMX219_FMT_1280x720_RAW10_30FPS,
+    IMX219_FMT_1536x864_RAW10_30FPS,
+    IMX219_FMT_1640x1232_RAW10_1FPS,
+    IMX219_FMT_1640x1232_RAW10_5FPS,
+    IMX219_FMT_1640x1232_RAW10_15FPS,
+    IMX219_FMT_1632x1232_RAW10_15FPS,
 };
 
 static const esp_cam_sensor_isp_info_t imx219_isp_info[] = {
@@ -91,6 +97,87 @@ static const esp_cam_sensor_isp_info_t imx219_isp_info[] = {
             .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
         }
     },
+    [IMX219_FMT_1280x720_RAW10_30FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX219_PIXEL_RATE_2LANE,
+            .hts = IMX219_HTS,
+            /* Same VTS as the 1640 mode - only the readout width changed, so
+               frame rate and every exposure limit are identical. */
+            .vts = 1763,                        /* 0x06e3 */
+            .exp_def = IMX219_EXPOSURE_DEFAULT,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX219_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX219_FMT_1536x864_RAW10_30FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX219_PIXEL_RATE_2LANE,
+            .hts = IMX219_HTS,
+            /* Same VTS as the 1640 mode - only the readout width changed, so
+               frame rate and every exposure limit are identical. */
+            .vts = 1763,                        /* 0x06e3 */
+            .exp_def = IMX219_EXPOSURE_DEFAULT,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX219_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX219_FMT_1640x1232_RAW10_1FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX219_PIXEL_RATE_2LANE,
+            .hts = IMX219_HTS,
+            .vts = 52900,                       /* ~1 fps, exposure <= 52896 lines */
+            .exp_def = IMX219_EXPOSURE_DEFAULT,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX219_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+    [IMX219_FMT_1640x1232_RAW10_5FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX219_PIXEL_RATE_2LANE,
+            .hts = IMX219_HTS,
+            .vts = 10580,                       /* ~5 fps, exposure <= 10576 lines */
+            .exp_def = IMX219_EXPOSURE_DEFAULT,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX219_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+
+    [IMX219_FMT_1640x1232_RAW10_15FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX219_PIXEL_RATE_2LANE,
+            .hts = IMX219_HTS,
+            .vts = 3526,                        /* real 15fps */
+            .exp_def = IMX219_EXPOSURE_DEFAULT,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX219_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+
+    [IMX219_FMT_1632x1232_RAW10_15FPS] = {
+        .isp_v1_info = {
+            .version = SENSOR_ISP_INFO_VERSION_DEFAULT,
+            .pclk = IMX219_PIXEL_RATE_2LANE,
+            .hts = IMX219_HTS,
+            /* Same VTS as the 1640 mode - only the readout width changed, so
+               frame rate and every exposure limit are identical. */
+            .vts = 3526,                        /* real 15fps */
+            .exp_def = IMX219_EXPOSURE_DEFAULT,
+            .gain_def = IMX219_ANA_GAIN_DEFAULT,
+            .tline_ns = IMX219_TLINE_NS,
+            .bayer_type = ESP_CAM_SENSOR_BAYER_RGGB,
+        }
+    },
+
 };
 
 static const esp_cam_sensor_format_t imx219_format_info[] = {
@@ -148,6 +235,117 @@ static const esp_cam_sensor_format_t imx219_format_info[] = {
         },
         .reserved = NULL,
     },
+    [IMX219_FMT_1280x720_RAW10_30FPS] = {
+        .name = "MIPI_2lane_24Minput_RAW10_1280x720_30fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX219_XCLK_FREQ_HZ,
+        .width = 1280,
+        .height = 720,
+        .regs = imx219_mode_1280x720_regs,
+        .regs_size = ARRAY_SIZE(imx219_mode_1280x720_regs),
+        .fps = 30,
+        .isp_info = &imx219_isp_info[IMX219_FMT_1280x720_RAW10_30FPS],
+        .mipi_info = {
+            .mipi_clk = IMX219_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX219_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+    [IMX219_FMT_1536x864_RAW10_30FPS] = {
+        .name = "MIPI_2lane_24Minput_RAW10_1536x864_30fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX219_XCLK_FREQ_HZ,
+        .width = 1536,
+        .height = 864,
+        .regs = imx219_mode_1536x864_regs,
+        .regs_size = ARRAY_SIZE(imx219_mode_1536x864_regs),
+        .fps = 30,
+        .isp_info = &imx219_isp_info[IMX219_FMT_1536x864_RAW10_30FPS],
+        .mipi_info = {
+            .mipi_clk = IMX219_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX219_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+    [IMX219_FMT_1640x1232_RAW10_1FPS] = {
+        .name = "MIPI_2lane_24Minput_RAW10_1640x1232_1fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX219_XCLK_FREQ_HZ,
+        .width = 1640,
+        .height = 1232,
+        .regs = imx219_mode_1640x1232_1fps_regs,
+        .regs_size = ARRAY_SIZE(imx219_mode_1640x1232_1fps_regs),
+        .fps = 1,
+        .isp_info = &imx219_isp_info[IMX219_FMT_1640x1232_RAW10_1FPS],
+        .mipi_info = {
+            .mipi_clk = IMX219_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX219_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+    [IMX219_FMT_1640x1232_RAW10_5FPS] = {
+        .name = "MIPI_2lane_24Minput_RAW10_1640x1232_5fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX219_XCLK_FREQ_HZ,
+        .width = 1640,
+        .height = 1232,
+        .regs = imx219_mode_1640x1232_5fps_regs,
+        .regs_size = ARRAY_SIZE(imx219_mode_1640x1232_5fps_regs),
+        .fps = 5,
+        .isp_info = &imx219_isp_info[IMX219_FMT_1640x1232_RAW10_5FPS],
+        .mipi_info = {
+            .mipi_clk = IMX219_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX219_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+
+    [IMX219_FMT_1640x1232_RAW10_15FPS] = {
+        .name = "MIPI_2lane_24Minput_RAW10_1640x1232_15fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX219_XCLK_FREQ_HZ,
+        .width = 1640,
+        .height = 1232,
+        .regs = imx219_mode_1640x1232_15fps_regs,
+        .regs_size = ARRAY_SIZE(imx219_mode_1640x1232_15fps_regs),
+        .fps = 15,
+        .isp_info = &imx219_isp_info[IMX219_FMT_1640x1232_RAW10_15FPS],
+        .mipi_info = {
+            .mipi_clk = IMX219_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX219_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+
+    [IMX219_FMT_1632x1232_RAW10_15FPS] = {
+        .name = "MIPI_2lane_24Minput_RAW10_1632x1232_15fps",
+        .format = ESP_CAM_SENSOR_PIXFORMAT_RAW10,
+        .port = ESP_CAM_SENSOR_MIPI_CSI,
+        .xclk = IMX219_XCLK_FREQ_HZ,
+        .width = 1632,
+        .height = 1232,
+        .regs = imx219_mode_1632x1232_15fps_regs,
+        .regs_size = ARRAY_SIZE(imx219_mode_1632x1232_15fps_regs),
+        .fps = 15,
+        .isp_info = &imx219_isp_info[IMX219_FMT_1632x1232_RAW10_15FPS],
+        .mipi_info = {
+            .mipi_clk = IMX219_MIPI_CSI_LINE_RATE,
+            .lane_num = 2,
+            .line_sync_en = IMX219_LINESYNC_ENABLE,
+        },
+        .reserved = NULL,
+    },
+
 };
 
 /*
@@ -171,9 +369,21 @@ static const esp_cam_sensor_format_t imx219_format_info[] = {
 
 #define IMX219_DEFAULT_FORMAT_INDEX CONFIG_CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT
 
-#if IMX219_DEFAULT_FORMAT_INDEX >= 3
+#if IMX219_DEFAULT_FORMAT_INDEX >= 6
 #error "CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT is out of range - see the mode table above"
 #endif
+
+/* Set before esp_video_init so ISP/IPA sees the selected timing and controls
+ * from its first initialization. Existing devices are not reconfigured here.
+ * The camera owner serializes initialization and subsequent mode changes.
+ */
+static unsigned initial_format_index = IMX219_DEFAULT_FORMAT_INDEX;
+esp_err_t imx219_set_initial_format_index(unsigned index)
+{
+    if (index >= ARRAY_SIZE(imx219_format_info)) return ESP_ERR_INVALID_ARG;
+    initial_format_index = index;
+    return ESP_OK;
+}
 
 /* ------------------------------------------------------------------ */
 /* Gain table                                                          */
@@ -697,7 +907,7 @@ static esp_err_t imx219_set_format(esp_cam_sensor_device_t *dev, const esp_cam_s
     esp_err_t ret = ESP_OK;
 
     if (format == NULL) {
-        format = &imx219_format_info[IMX219_DEFAULT_FORMAT_INDEX];
+        format = &imx219_format_info[initial_format_index];
     }
 
     /* Software reset, then apply: common -> 2-lane PLL -> pixel format -> mode. */
@@ -868,7 +1078,7 @@ esp_cam_sensor_device_t *imx219_detect(esp_cam_sensor_config_t *config)
     dev->ops = &imx219_ops;
     /* Shadow the default mode straight away: esp_video reads bayer_type out of
        cur_format at device open, which can happen without a set_format call. */
-    imx219_select_format(dev, &imx219_format_info[IMX219_DEFAULT_FORMAT_INDEX]);
+    imx219_select_format(dev, &imx219_format_info[initial_format_index]);
 
     if (config->sensor_port != ESP_CAM_SENSOR_MIPI_CSI) {
         ESP_LOGE(TAG, "only MIPI-CSI is supported");

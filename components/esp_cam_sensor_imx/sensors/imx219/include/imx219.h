@@ -33,6 +33,13 @@ extern "C" {
  */
 esp_cam_sensor_device_t *imx219_detect(esp_cam_sensor_config_t *config);
 
+/** Select the default for subsequent initialization/set_format(NULL).
+ * Call from the camera owner before esp_video_init; does not change a live
+ * device. Defaults to the Kconfig index until explicitly set.
+ */
+esp_err_t imx219_set_initial_format_index(unsigned index);
+
+
 #ifdef __cplusplus
 }
 #endif

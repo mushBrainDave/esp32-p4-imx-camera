@@ -25,7 +25,7 @@ menu "Camera Sensor (IMX add-on)"
         config CAMERA_IMX219_MIPI_IF_FORMAT_INDEX_DEFAULT
             int "Default MIPI-CSI mode index"
             default 0
-            range 0 2
+            range 0 8
             help
                 Which entry of the driver's mode table the sensor comes up in.
 
@@ -41,6 +41,13 @@ menu "Camera Sensor (IMX add-on)"
                       H.264 core derives its line stride from the width it is
                       given, so a non-multiple-of-16 width shears the picture.
                       Costs 0.5% of the horizontal field of view.
+                  3 - 1280x720 RAW10 30fps, centered crop with 2x2 binning.
+                      Keeps mode 2 line/frame timing; reduced field of view.
+                  4 - 1536x864 RAW10 30fps, wider centered 2x2-binned crop.
+                  5 - 1640x1232 RAW10 1fps, full field and long-exposure ceiling.
+                  6 - 1640x1232 RAW10 5fps, full field.
+                  7 - 1640x1232 RAW10 15fps, full field.
+                  8 - 1632x1232 RAW10 15fps, same slight side crop as mode 2.
 
     endif # CAMERA_IMX219
 
