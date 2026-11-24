@@ -36,6 +36,8 @@ env:
 
 jobs:
   publish:
+    # The fork delivers camera releases separately from the upstream registry.
+    if: github.repository == 'mushBrainDave/esp32-p4-imx-camera'
     runs-on: ubuntu-latest
     steps:
       # v5 onwards run on node24; v4 is node20, which GitHub is retiring.

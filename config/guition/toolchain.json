@@ -1,0 +1,7 @@
+{
+  "sdk_version": "v6.0.2",
+  "sdk_commit": "7101770dc6db2667b3c477cc31365dd1acd6db4e",
+  "ipa_commit": "1f7d39e37b69be18ce977dbab83d1717abcebbe4",
+  "compiler": "riscv32-esp-elf-gcc esp-15.2.0_20251204, 15.2.0",
+  "python": "3.12.14"
+}

@@ -67,8 +67,8 @@
             "f_n0": 1,
             "luma_adjust":
             {
-                "target_low": 50,
-                "target_high": 150,
+                "target_low": 90,
+                "target_high": 110,
                 "target": 100,
                 "low_threshold": 30,
                 "low_regions": 10,
@@ -95,8 +95,8 @@
             {
                 "low_threshold": 40,
                 "high_threshold": 80,
-                "weight_offset": 10,
-                "luma_offset": 10
+                "weight_offset": 0,
+                "luma_offset": 0
             }
         },
         "aen": {

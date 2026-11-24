@@ -110,3 +110,15 @@ wifi_credentials.h
 # --project-dir, so this lands either at the repo root or inside the component
 # depending on how it was invoked.
 dist/
+
+# Pinned external dependency fetched by tools/setup-dependencies.py
+/third_party/esp-video-components/
+# Camera build and release outputs
+/build-camera/
+/releases/
+
+# Private planning and session records
+/ASTRA_ULTRA_PLAN.md
+/PROJECT_STATUS.md
+/docs/qualification/
+/hardware/

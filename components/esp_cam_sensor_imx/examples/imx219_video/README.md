@@ -7,6 +7,24 @@ on an ESP32-P4, buffers the clip in PSRAM, then sends it down the console UART.
 Measured on the bench: **1632x1232 at 28.1 fps**, 225 frames, zero encoder
 failures.
 
+
+## Local Guition board build
+
+This workspace targets JC-ESP32P4-M3-DEV, P4 v1.3, 16 MB flash,
+32 MB hex PSRAM, SCCB SCL8/SDA7. Use a fresh generated configuration:
+
+```bash
+idf.py -B build-guition -D SDKCONFIG=build-guition/sdkconfig reconfigure build
+idf.py -B build-guition -D SDKCONFIG=build-guition/sdkconfig -p /dev/ttyUSB0 flash
+```
+
+Verify the generated revision range (v1.0–v1.99), flash size and image headers
+before flashing. Then run `tools/capture.py` from the repository root with
+`--port /dev/ttyUSB0 --baud 460800 --project components/esp_cam_sensor_imx/examples/imx219_video`
+and an output name, **without `--flash`**: the helper's current flash command
+does not select `build-guition` or its generated configuration. Existing build
+configurations retain settings even after defaults change.
+
 ## Build and run
 
 ```bash
@@ -107,3 +125,11 @@ another layout, keep the pairs.
 
 There is no autofocus and no `.cam_motor` config: the v2 module is fixed-focus,
 with nothing at I2C `0x0c`.
+
+### P4 v1.3 IPA compatibility
+
+The manifest overrides IPA with the pinned checkout documented in
+`third_party/README.md` at the repository root. Fetch it before a clean build.
+This avoids the IDF 6.x registry 2.4.0 illegal-instruction crash on pre-v3 chips.
+Serial diagnostics use 460800 baud because 2 Mbaud lost bytes on this setup.
+Use a sufficiently long capture timeout for recorded video transfer.

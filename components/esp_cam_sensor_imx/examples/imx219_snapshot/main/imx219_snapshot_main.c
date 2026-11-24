@@ -45,7 +45,7 @@
 
 #include "imx_serial_img.h"
 
-/* ---- Camera pins (Waveshare ESP32-P4-WIFI6) ----------------------------- */
+/* ---- Camera pins (Guition JC-ESP32P4-M3-DEV; schematic-verified) ----------------------------- */
 #define CAM_SCCB_I2C_PORT   0
 #define CAM_SCCB_SCL_PIN    8
 #define CAM_SCCB_SDA_PIN    7

@@ -1,359 +1,70 @@
-# esp_cam_sensor_imx
+# ESP32-P4 IMX219 LAN camera
 
-Sony **IMX-series** MIPI-CSI camera drivers for the **ESP32-P4**, targeting the
-`esp_cam_sensor` / `esp_video` framework — so the Raspberry Pi camera modules
-work on the P4.
+A maintained fork of [mushBrainDave/esp32-p4-imx-camera](https://github.com/mushBrainDave/esp32-p4-imx-camera), extending its IMX219 driver with an Ethernet H.264/RTSP camera application. Original history, licenses and attribution are retained. See the [upstream project guide](docs/UPSTREAM_README.md) for its other sensors and examples (paths in that archived guide are relative to the repository root).
 
-Espressif's stock sensor set covers OV-series and Arducam-branded modules, but
-**none of the Raspberry Pi IMX sensors** (IMX219 / IMX477 / IMX708) have a
-generic driver. This project fills that gap.
+## Tested hardware
 
-> **Status: both drivers are working cameras.** The IMX708 streams in five
-> modes at 2–56 fps (or frames up to ~112 s long), with a tuned ISP, autofocus,
-> flips, test patterns and a selectable MIPI link frequency. The IMX219 streams,
-> takes stills and records H.264. The examples below take stills and video off
-> the board over USB serial or WiFi. The driver also runs on **ESP32-P4 v3.x
-> silicon**: a board config for the v3.2 WT9932P4-TINY records IMX708 H.264
-> there, under ESP-IDF v5.5. See [Roadmap](#roadmap).
+Guition JC-ESP32P4-M3-DEV, ESP32-P4 v1.3 (pre-v3), 16 MB flash,
+32 MB PSRAM and IMX219. Ethernet is 100 Mbps. Other boards and IMX462 are not
+qualified by this milestone.
 
-## Supported / planned sensors
+## Build
 
-| Sensor | Module | Status |
-| ------ | ------ | ------ |
-| IMX708 | Pi Camera v3 / NoIR v3 | 🟢 **Working on hardware** — streaming, ISP tuning, autofocus, H.264, live video over WiFi, variable frame rate and long exposure |
-| IMX219 | Pi Camera v2 / NoIR v2 | 🟢 Streaming, ISP tuning, stills, H.264 video — verified on hardware. Fixed-focus, no AF |
-| IMX477 | Pi HQ Camera | ⚪ Planned |
-
-Modes implemented:
-
-| Sensor | Mode | Format | FPS | Notes |
-| ------ | ---- | ------ | --- | ----- |
-| IMX708 | 1920×1080 | RAW10 | 28 | 2×2 binned, digitally cropped — **the default, and what the examples were measured at** |
-| IMX708 | 1280×720 | RAW10 | 28 | The same readout cropped harder: 56% of the field each way |
-| IMX708 | 1024×768 | RAW10 | 28 | 4:3 — narrower than 720p across, taller down it |
-| IMX708 | 800×600 | RAW10 | 28 | SVGA. Needs the same encoder height trim as 1080 |
-| IMX708 | 640×480 | RAW10 | 28 | A tight 4:3 window, 15% of the pixels |
-| IMX219 | 1640×1232 | RAW10 | 30 | 2×2 binned, full FOV — recommended first target |
-| IMX219 | 3280×2464 | RAW10 | 15 | Full resolution, higher bandwidth |
-
-The five IMX708 modes are one readout, not five: each is a centred digital
-crop of the same 2×2-binned 2304×1296 field, with identical timing. A smaller
-mode buys CSI bandwidth, PSRAM and encode time and pays in field of view. It
-does not change the sensor's timing — the 28 fps above is every mode's default —
-but it does recover frames the pipeline drops at full size: `imx708_video`
-measures 27.3 fps at 1920×1080 and 28.0 at every smaller mode. Nothing is scaled, because the
-sensor cannot: its scaling block is read-only, so a smaller mode is a narrower
-window rather than the whole scene shrunk. Pick one with
-`CAMERA_IMX708_MIPI_IF_FORMAT_INDEX_DEFAULT`, or at run time: `imx708_snapshot`
-takes a mode digit typed at its console and re-cycles the video stack around
-the switch, so resolution can change without a rebuild, a reflash or a reboot.
-
-**Frame rate is separate from mode.** `imx708_set_frame_length()` sets it live,
-in any mode, from 56 fps down to 1.14 fps, and past that the sensor's
-long-exposure shift carries a frame out to ~112 s — which is also what raises
-the exposure ceiling. 720p records a true 56 fps; 640×480 tears above 48, a
-pipeline limit not yet explained. The IMX708 also has all five of Raspberry Pi's
-test patterns (PN9 for checking the link bit-for-bit) and Raspberry Pi's three
-MIPI link frequencies, for moving the link's harmonics off a WiFi channel. The
-[component README](components/esp_cam_sensor_imx/README.md#frame-rate-exposure-and-test-controls)
-has the calls.
-
-**Autofocus** is implemented for the IMX708's DW9807 VCM
-(`components/esp_cam_sensor_imx/motors/dw9807`, I2C `0x0c`), driven by
-`esp_ipa`'s AF algorithm through `esp_video`'s pipeline controller. It is
-contrast-only: the driver installs the sensor's phase-detect correction gains,
-but nothing reads the PDAF data yet.
-
-**ISP tuning** lives in
-`components/esp_cam_sensor_imx/sensors/imx708/cfg/imx708_default.json` — AE,
-AWB, denoise, gamma/sharpen, metering weights, saturation and CCM. The CCM is a
-deliberately gentle seed rather than a calibration, set up on a regular (IR-cut)
-Camera Module 3. A NoIR module has no IR-cut filter, so infrared contaminates all
-three channels and its colour is further off again on this seed.
-
-The main development board is a **Waveshare ESP32-P4-WIFI6** (P4 v1.3 silicon), on
-**ESP-IDF v5.4.0**.
-
-### ESP32-P4 v3.x chips
-
-There is now a config for running the driver on **v3.x ESP32-P4 silicon**:
-[`sdkconfig.defaults.p4v3`](components/esp_cam_sensor_imx/examples/imx708_video/sdkconfig.defaults.p4v3)
-in `imx708_video`. It layers on top of the example's normal `sdkconfig.defaults`
-and builds into its own `build-p4v3/` directory, so the v1.x build is untouched.
-It targets the **Wireless-Tag WT9932P4-TINY** (WT0132P4-A1 module, P4 v3.2) and
-sets four things:
-
-- v3.x silicon, which also selects esp_h264's v3 register map.
-- 16 MB flash.
-- The USB-Serial/JTAG console.
-- IO0 as the camera power enable.
-
-The driver itself needed no changes.
-
-- **Needs ESP-IDF v5.5 or later.** v5.4 cannot target a v3 chip. Measured on v5.5.5.
-- **Measured 2026-10-10:** 27.8 fps at 1080p and a true 56.0 fps at 720p, 0 failed
-  frames. That is about the same as v1.3. The hardware H.264 encoder is still the
-  1080p limit, and 56 fps is the sensor's ceiling, so the faster chip has little
-  room to show.
-- **Mind the cable.** The TINY's CSI connector is numbered opposite to a Pi's, with
-  an always-on 3.3 V on pin 1. The stock Pi cable shorts it and burnt out a camera
-  here. Use the Type A FPC from Wireless-Tag's WTDK-CAM-2336.
-
-Build commands and the full results are in
-[`imx708_video`'s README](components/esp_cam_sensor_imx/examples/imx708_video/README.md#on-the-wt9932p4-tiny-esp32-p4-v32).
-Only `imx708_video` has the overlay so far. The other examples' serial transport
-still assumes a UART console.
-
-## How it plugs in
-
-This is a **standalone add-on component**. It does not fork `esp_cam_sensor`; it
-registers itself into that framework's auto-detect array through the
-`.esp_cam_sensor_detect_fn` linker section (which `esp_cam_sensor`'s `linker.lf`
-gathers from *all* archives). The `-u <name>_detect` flag in `CMakeLists.txt`
-forces the object to be linked. Motors work the same way, via
-`.esp_cam_motor_detect_fn`.
-
-### Install
-
-The driver is published to the ESP Component Registry as
-[`mushbraindave/esp_cam_sensor_imx`](https://components.espressif.com/components/mushbraindave/esp_cam_sensor_imx):
+Install ESP-IDF v6.0.2 at commit
+`7101770dc6db2667b3c477cc31365dd1acd6db4e` with its submodules and ESP32-P4 tools,
+then activate that SDK's export.sh. From a clean checkout:
 
 ```bash
-idf.py add-dependency "mushbraindave/esp_cam_sensor_imx^0.4.0"
+python3 tools/setup-dependencies.py
+bash tools/build-camera.sh
+python3 tools/host-tests.py
 ```
 
-Or start from one of the seven examples it ships with, which bring their own
-`sdkconfig.defaults`:
+The setup script fetches the exact pre-v3 IPA compatibility dependency.
+The build uses the qualified configuration and dependency lock in config/guition/.
+Existing different dependency locks are preserved; use a clean checkout if the
+wrapper reports a conflict. Generated firmware is in build-camera/.
+Builds are not promised byte-identical to the saved hardware-tested firmware.
+
+To flash that new build, after connecting the board:
 
 ```bash
-idf.py create-project-from-example "mushbraindave/esp_cam_sensor_imx^0.4.0:imx708_capture"
+idf.py -C components/esp_cam_sensor_imx/examples/imx219_rtsp_eth -B "$PWD/build-camera" -D SDKCONFIG="$PWD/build-camera/sdkconfig" -p /dev/ttyUSB0 flash
 ```
 
-The component's own [README](components/esp_cam_sensor_imx/README.md) is the
-reference for consuming it — in particular the `ESP_IPA_JSON_CONFIG_FILE_PATH`
-registration, which the application has to do and which fails silently if
-skipped. Then in `menuconfig`:
+## Connect and control
 
-- Enable **Camera Sensor (IMX add-on) → Support IMX708** (or IMX219).
-- For IMX708 autofocus, also enable **CAM_MOTOR_DW9807** plus
-  `ESP_IPA_AF_ALGORITHM`, `ESP_VIDEO_ENABLE_CAMERA_MOTOR_CONTROLLER` and
-  `ESP_VIDEO_ISP_PIPELINE_CONTROL_CAMERA_MOTOR`. Dropping any one of the three
-  fails differently and none of them says so out loud.
-- In the `esp_video` config, make sure the MIPI-CSI controller is enabled and
-  configured for **2 data lanes**.
-
-At start-up `esp_video` probes the SCCB bus and binds by chip ID: IMX708 at I2C
-`0x1a` (`0x0708`), IMX219 at `0x10` (`0x0219`). The first success signal is the
-`detected IMX708, PID=0x0708` line.
-
-Each example's `sdkconfig.defaults` is a working reference for all of the above.
-
-## Examples
-
-| Example | What it does |
-| ------- | ------------ |
-| [`i2c_probe`](examples/i2c_probe/) | Walks the SCCB bus and reads chip IDs. The first thing to run on new hardware. |
-| [`imx708_capture`](components/esp_cam_sensor_imx/examples/imx708_capture/) | Streams frames and logs size and brightness per frame. |
-| [`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/) | One still, hardware-JPEG encoded, sent down USB serial. Its console switches mode, flips, exposure bias, frame rate, test pattern and link frequency without a reflash. Also carries the focus-sweep and buffer-poison diagnostics. |
-| [`imx708_video`](components/esp_cam_sensor_imx/examples/imx708_video/) | ~8 s of H.264 into PSRAM, then the whole clip down USB serial. Any mode, 2–56 fps; measured **27.3 fps at 1080p** (encoder-bound) and a true **56.0 at 720p**. Also builds for P4 v3.x (WT9932P4-TINY) via `sdkconfig.defaults.p4v3`. |
-| [`imx708_wifi_snapshot`](components/esp_cam_sensor_imx/examples/imx708_wifi_snapshot/) | Camera + WiFi + an HTTP server: `GET /snapshot.jpg` from a browser. |
-| [`imx708_wifi_video`](components/esp_cam_sensor_imx/examples/imx708_wifi_video/) | **Live 1080p H.264 over WiFi**, played in a browser tab. Fragmented MP4 muxed on the board, plus a raw Annex-B endpoint for `ffplay`. |
-| [`imx219_snapshot`](components/esp_cam_sensor_imx/examples/imx219_snapshot/) | One still from a Camera Module v2, hardware-JPEG encoded, sent down USB serial. |
-| [`imx219_video`](components/esp_cam_sensor_imx/examples/imx219_video/) | ~8 s of IMX219 H.264 down USB serial. Measured **28.1 fps at 1632×1232**. |
-| [`imx219_capture`](examples/imx219_capture/) | The IMX219 equivalent of `imx708_capture`. The two above are the IMX219 examples verified on hardware. |
-| [`c6_link_check`](examples/c6_link_check/) | Five-second answer to "is the ESP32-C6 radio alive": brings up WiFi and scans. |
-| [`c6_wifi_sta`](examples/c6_wifi_sta/) | Associates with an AP, takes a DHCP lease, proves the route out. |
-
-All seven sensor examples — five IMX708, two IMX219 — live **inside the component**, under
-`components/esp_cam_sensor_imx/examples/`, so they are uploaded with it and can
-be fetched with `idf.py create-project-from-example`. Each is self-contained:
-the glue components an example needs — `imx_serial_img`, `imx_wifi`,
-`imx_fmp4` — are vendored into its own `components/` directory rather than
-shared from the repository root, because a project created from the registry
-gets the example directory and nothing around it. The remaining top-level
-`examples/` are board bring-up tools that do not involve the sensor.
-
-Each carries its own `sdkconfig.defaults`, target included, so `idf.py build flash`
-is enough — there is no need to `set-target`, which would discard the generated
-config and regenerate it.
-
-## Getting frames off the board
-
-There is no need for a microSD card, and both paths are in-tree.
-
-**USB serial**, via `imx_serial_img` — a framed, CRC-checked blob format over
-the console UART at 2 Mbaud. It ships inside the two examples that use it
-([`imx708_snapshot`](components/esp_cam_sensor_imx/examples/imx708_snapshot/components/imx_serial_img/)
-and `imx708_video`) rather than as a shared component, so each example stays
-self-contained when copied out of the registry.
-[`tools/capture.py`](tools/capture.py) flashes, resets, captures and extracts the
-images in one command:
+Find the board's DHCP lease on your router. With CAMERA_IP replaced:
 
 ```bash
-python tools/capture.py --flash --project components/esp_cam_sensor_imx/examples/imx708_snapshot
+curl http://CAMERA_IP/api/v1/status
+curl http://CAMERA_IP/api/v1/profiles
+curl -X POST 'http://CAMERA_IP/api/v1/profile?id=fullview30'
 ```
 
-**WiFi**, via `imx_wifi` (vendored into each WiFi example's own
-`components/`) — the P4 has no
-radio of its own, so this goes over SDIO to the board's ESP32-C6 running
-`esp_hosted` slave firmware. `imx708_wifi_snapshot` then serves frames over
-HTTP. Measured sustained throughput is **6–7 Mbit/s**; a 260 KB JPEG takes
-0.47 s on a warm connection and 1.70 s on a cold one, because TCP slow start
-dominates anything small. Full numbers and two non-obvious traps are in that
-example's [README](components/esp_cam_sensor_imx/examples/imx708_wifi_snapshot/README.md), and the radio
-bring-up is written up in [`docs/esp32c6-bringup.md`](docs/esp32c6-bringup.md).
+Open `rtsp://CAMERA_IP:8554/live`. Use a single camera reader; a LAN server
+running [MediaMTX](server/mediamtx/README.md) can pull once and distribute RTSP/HLS
+to multiple viewers. Replace the source address in its example configuration.
+MediaMTX runs on the server.
 
-`imx708_wifi_video` then serves *live* H.264 over the same link, as fragmented
-MP4 for a browser and as a raw Annex-B stream for `ffplay`. The muxer lives in
-`imx_fmp4`, vendored into that example, and compiles on the host, so the
-container can be checked against a recorded clip before anything is flashed.
+| Profile | Encoded dimensions | FPS | View |
+|---|---|---|---|
+| detail15 | 1632 × 1232 | 15 | Slight side trim |
+| fullview15 | 1280 × 960 | 15 | Full view, resized |
+| fullview30 | 832 × 624 | 30 | Full view, resized |
+| 720p30 | 1280 × 720 | 30 | Wide crop |
+| balanced30 | 1536 × 864 | 30 | Wide crop |
+| ultra1 | 1664 × 1248 | 1 | Native full view with padding, QP 8 |
+| ultra5 | 1664 × 1248 | 5 | Native full view with padding, QP 8 |
 
-**Throughput on this link is not a constant.** The same `/bench` endpoint, on
-the same unchanged binary and the same −40 dBm association, measured 7.2 Mbit/s
-one day and 0.05 Mbit/s the next — with pings still at 0% loss and 4 ms, which
-is the signature of bursty 2.4 GHz interference rather than congestion. Measure
-before concluding anything about a slow stream.
+See [camera operations](CAMERA_OPERATIONS.md) for API details, exposure controls
+and operational limits. Services are intended for a trusted LAN.
 
-WiFi credentials go in a **gitignored** `wifi_credentials.h`, written from the
-committed `.example` template beside it.
+## Validation and development
 
-## Publishing the component
+[Validation](docs/VALIDATION.md) describes tested hardware, checks and limits.
+[Upstream review notes](docs/UPSTREAM_REVIEW.md) record compatibility work still
+needed before contributing these changes upstream.
 
-`components/esp_cam_sensor_imx/` is packaged for the
-[ESP Component Registry](https://components.espressif.com/). A push of a
-`component-v<version>` tag runs
-[`.github/workflows/publish-component.yml`](.github/workflows/publish-component.yml),
-which checks the tag against `version:` in the manifest, strips the examples'
-`override_path` (see below) and uploads. It needs an
-`IDF_COMPONENT_API_TOKEN` repository secret.
-
-To do it by hand, or to inspect what would be uploaded:
-
-```bash
-python tools/strip_example_overrides.py
-```
-
-```bash
-compote component pack --name esp_cam_sensor_imx --project-dir components/esp_cam_sensor_imx --dest-dir "$PWD/dist"
-```
-
-```bash
-git checkout components/esp_cam_sensor_imx/examples
-```
-
-`--dest-dir` is resolved relative to `--project-dir`, not the working
-directory, so without an absolute path the archive lands inside the component.
-To have the registry validate a version without creating it, swap `pack` for
-`upload --dry-run` (or `upload --check-only` to ask whether a version is
-already taken); both need the API token in the environment.
-
-The examples' `main/idf_component.yml` declares the driver with an
-`override_path` pointing back at this working tree, so a checkout builds and
-tests its own source instead of downloading a published version. That field is
-meaningless once an example has been copied out of the component, and `compote`
-packs manifests through verbatim — hence the strip step. Registry versions are
-immutable: a wrong number has to be yanked, not overwritten.
-
-## Docs
-
-- [`docs/registry-quickstart.md`](docs/registry-quickstart.md) — the consumer's
-  side: pulling the component off the registry, building, flashing and reading
-  the log, without this repository checked out. Includes what a working boot
-  log looks like and the failure that logs nothing.
-- [`docs/cli-cookbook.md`](docs/cli-cookbook.md) — the commands actually used to
-  build, flash, capture and diagnose: stills over SD/USB/WiFi, video, the C6
-  radio, and decoding a RISC-V panic. Most are not the obvious first guess.
-- [`docs/esp32c6-bringup.md`](docs/esp32c6-bringup.md) — the ESP32-C6 radio:
-  schematic pin map, version ceiling, the slave OTA, and the measured
-  throughput.
-
-## Porting map — how the Linux driver maps onto ESP-IDF
-
-The Linux `drivers/media/i2c/imx219.c` is a V4L2 subdev bolted to the kernel
-media framework — not directly portable. What *is* portable is the
-sensor-specific data. This table records where each piece came from and where it
-lives here, so the same method can be repeated for IMX477.
-
-| Linux `imx219.c` (GPL-2.0) | This project (Apache-2.0) |
-| -------------------------- | ------------------------- |
-| `IMX219_REG_*` addresses, `CHIP_ID 0x0219` | `imx219_regs.h` |
-| `imx219_common_regs[]`, `imx219_2lane_regs[]`, `mode_*_regs[]` | `imx219_settings.h` register arrays |
-| `supported_modes[]` (w/h/vts/binning) | `imx219_format_info[]` + `imx219_isp_info[]` in `imx219.c` |
-| `imx219_set_ctrl()` exposure/gain/flip → register writes | `imx219_set_para_value()` + `imx219_set_exposure/gain/mirror/vflip()` |
-| `V4L2_CID_*` control IDs | `ESP_CAM_SENSOR_*` control IDs (`esp_cam_sensor_types.h`) |
-| `regmap`/CCI 16-bit writes | `esp_sccb_*_reg_a16v8()` helpers (16-bit reg, 8-bit val; 16-bit values split big-endian) |
-| link freq 456 MHz / pixel rate 182.4 MHz | `IMX219_MIPI_CSI_LINE_RATE` (912 Mbps/lane) / `pclk` in ISP info |
-| device-tree probe + PM | `imx219_detect()` + `imx219_power_on/off()` |
-
-Only factual register numbers and standard bring-up values are reproduced. No
-GPL code is copied. See [Licensing](#licensing).
-
-## Roadmap
-
-Done:
-
-1. ~~IMX708 streaming on hardware~~
-2. ~~ISP tuning (IPA JSON)~~ — AE, AWB, CCM seed, denoise, sharpening
-3. ~~Exposure/gain into `esp_video`'s 3A loop~~ — gain had to be exposed as an
-   **enumeration**, not a number; see the platform traps below
-4. ~~IMX708 autofocus~~ — DW9807 VCM, working
-5. ~~Frames off the board without an SD card~~ — JPEG and H.264 over USB serial
-6. ~~WiFi~~ — ESP32-C6 radio up, HTTP server serving stills
-7. ~~Video over WiFi~~ — live H.264, fragmented MP4 muxed on the board, playing
-   in a browser. MJPEG was ruled out by the measured link ceiling (~3 fps at
-   q90); H.264 at 3 Mbit/s carries the whole 28 fps.
-8. ~~IMX219 on hardware~~ — stills and H.264 video.
-9. ~~IMX708 resolution modes~~ — five, switchable at run time.
-10. ~~IMX708 frame rate, long exposure, test patterns, link frequency~~ — the
-    controls Raspberry Pi's driver has, ported.
-
-Next:
-
-11. **CCM calibration** against a colour chart under known illuminants, to
-    replace the seed matrix, and **lens-shading correction**.
-12. **Phase-detect autofocus**, reading the IMX708's PDAF grid.
-13. **IMX477.**
-
-## Hardware notes
-
-- **Lanes/bandwidth:** both sensors are 2-lane. IMX219 runs a fixed 456 MHz link
-  (912 Mbps/lane) for all modes; the binned mode is the safe first target.
-- **XCLK:** 24 MHz. On the Waveshare board the Pi-style 15-pin CSI connector
-  routes neither reset nor pwdn, and the sensor free-runs on its own oscillator
-  — so there is **no host XCLK** and both pins are `-1`.
-- **Bayer order:** RGGB at default orientation. A flip rotates the phase, and
-  both drivers report the rotated one — but `esp_video` only reads it at device
-  open and on `VIDIOC_S_SENSOR_FMT`, so **set flips before the format**, or the
-  ISP demosaics on the wrong phase with no error.
-- **Resetting the P4 does not reset the camera.** The CSI connector routes
-  neither reset nor power-down, so the sensor keeps the last boot's state; both
-  drivers soft-reset it whenever a mode is set.
-- **Width ceiling between 1920 and 2048 px.** At 2304 wide, scene data ran out
-  around x=1918 and the edge columns duplicated each other exactly 2048 px
-  apart. The limit is in the datapath, not the sensor — Espressif ship every P4
-  camera example at ≤1920 wide. This is why the IMX708 mode is digitally
-  cropped to 1920.
-
-Five platform-level traps hit during bring-up — **every one of which fails
-silently, with no error and just a bad or absent image** — are worth reading
-before adding a sensor. They cover the width ceiling above, the gain-as-
-enumeration requirement, where IPA JSON registration must be declared, a PSRAM
-speed setting that silently falls back to 20 MHz, and an ABI mismatch with the
-prebuilt `esp_ipa` binary that silently breaks autofocus on ESP-IDF v5.4.0.
-The `ISP_AWB_WINDOW_X_NUM/_Y_NUM=5` block in each example's `CMakeLists.txt` is
-the workaround for the last of these; remove it if you move to IDF ≥ v5.4.4,
-which defines those macros itself.
-
-## Licensing
-
-This code is **Apache-2.0** — see [LICENSE](LICENSE). The Linux kernel `imx219.c` / `imx708.c` used as a
-reference are **GPL-2.0**; only non-copyrightable facts (register addresses,
-standard initialisation values published by Sony / in the Raspberry Pi firmware)
-were used. No source lines were copied. If you believe any content here is
-copyrightable and improperly included, open an issue.
-
-## Acknowledgements
-
-- Espressif `esp-video-components` (`esp_cam_sensor`, `esp_video`) — the
-  framework and the driver structure this follows.
-- The Linux kernel and Raspberry Pi camera driver authors — register reference.
+Firmware release assets should contain binaries, checksums and flashing
+instructions. See the [release guide](release/README.md).

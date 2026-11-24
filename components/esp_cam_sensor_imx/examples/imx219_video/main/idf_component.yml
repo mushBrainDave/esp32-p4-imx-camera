@@ -1,6 +1,10 @@
 dependencies:
   idf: ">=5.4"
-  espressif/esp_video: "^2.4"
+  espressif/esp_video: "2.5.0"
+  # Match the hardware-tested pre-v3 P4 IPA fix used by snapshot.
+  espressif/esp_ipa:
+    version: "2.4.0"
+    override_path: "../../../../../third_party/esp-video-components/esp_ipa"
   espressif/esp_h264: "^1.3"
   # The IMX219 driver. override_path points the solver at this repository's own
   # copy of the component - two directories up from this manifest - so a

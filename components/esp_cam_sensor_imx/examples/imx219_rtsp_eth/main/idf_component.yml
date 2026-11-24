@@ -1,0 +1,19 @@
+dependencies:
+  idf: ">=5.4"
+  espressif/esp_video: "2.5.0"
+  # Match the hardware-tested pre-v3 P4 IPA fix used by snapshot.
+  espressif/esp_ipa:
+    version: "2.4.0"
+    override_path: "../../../../../third_party/esp-video-components/esp_ipa"
+  espressif/esp_h264: "1.4.1"
+  espressif/esp_media_protocols: "1.0.3"
+  # The IMX219 driver. override_path points the solver at this repository's own
+  # copy of the component - two directories up from this manifest - so a
+  # checkout builds and tests its working tree instead of downloading a
+  # published version. The release workflow strips this field before upload, so
+  # a project created from this example on the registry resolves the dependency
+  # normally. If you are reading this in a created project and the build
+  # complains that override_path is not a component, delete the line.
+  mushbraindave/esp_cam_sensor_imx:
+    version: "^0.4.0"
+    override_path: "../../.."
